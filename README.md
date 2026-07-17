@@ -175,6 +175,7 @@ README.md                 Project overview (this file)
 docs/
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)
+firmware/                 ESP32 node firmware (PlatformIO/Arduino) — see firmware/README.md
 ```
 
-Planned as the project progresses: `firmware/` (PlatformIO project), `hardware/` (schematics, BOM with sourced part numbers), and `docs/calibration.md` (per-node calibration records).
+Planned as the project progresses: `hardware/` (schematics, BOM with sourced part numbers) and `docs/calibration.md` (per-node calibration records).
