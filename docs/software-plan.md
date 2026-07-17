@@ -141,6 +141,7 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 
 ## Testing Strategy
 
+- **Static analysis:** `firmware/lint.sh` (cppcheck + cpplint) runs without the ESP32 toolchain and should stay clean on every change; clang-tidy / `pio check` are available on toolchain-equipped machines for deeper passes.
 - **Bench rig:** a second ESP32 (or signal generator) producing fake "peak detector" voltages lets firmware development proceed without HV on the desk.
 - **Soak tests:** every firmware phase ends with a ≥24 h unattended bench run before moving on.
 - **Alert drills:** before trusting the system, deliberately induce each alert condition (drop the divider input, kill the node's power, kill its Wi-Fi) and confirm the right alert fires with the right urgency.

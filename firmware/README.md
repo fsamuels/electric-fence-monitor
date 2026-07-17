@@ -50,6 +50,15 @@ One retained message per wake cycle to `fence/<NODE_ID>/state`:
 
 If Wi-Fi doesn't come up within `WIFI_TIMEOUT_MS`, the node increments `failed_pub` and goes back to sleep rather than draining the battery retrying. "Node went silent" detection is the backend's job (software plan Phase 6).
 
+## Linting
+
+`./lint.sh` runs two static analyzers, neither of which needs the ESP32 toolchain installed:
+
+- **cppcheck** (`apt install cppcheck`) — bug-oriented static analysis: `--enable=warning,style,performance,portability`, with system-header lookups suppressed since Arduino/ESP-IDF headers aren't present off-target.
+- **cpplint** (`pip install cpplint`) — Google C++ style checks, with the copyright-header and include-subdir rules disabled and a 100-column line limit.
+
+Deeper analysis (**clang-tidy**, or PlatformIO's `pio check`) requires the full Arduino/ESP-IDF include tree, so run those on a machine with the toolchain installed. Keep `lint.sh` passing before pushing.
+
 ## Bench testing without high voltage
 
 Feed a known DC level (0–3 V, e.g. from a bench supply or a potentiometer across 3.3 V) into `PIN_FENCE_ADC` and check that `adc_mv` tracks it. The multi-sample/max logic can be exercised with a function generator producing slow pulses. No fence or HV divider is needed to develop against the MQTT/backend side.

@@ -15,6 +15,8 @@
 #include <WiFi.h>
 #include <esp_sleep.h>
 
+#include <cstdio>
+
 #include "config.h"
 
 #define FW_VERSION "0.1.0"
@@ -48,7 +50,7 @@ static float readBatteryVolts() {
     sumMv += analogReadMilliVolts(PIN_BATT_ADC);
     delay(2);
   }
-  const float avgMv = sumMv / (float)BATT_SAMPLES;
+  const float avgMv = sumMv / static_cast<float>(BATT_SAMPLES);
   return avgMv * BATT_DIVIDER_RATIO / 1000.0f;
 }
 
@@ -66,7 +68,7 @@ static bool connectWifi() {
 }
 
 static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
-                         long rssi, uint32_t wifiMs) {
+                         int32_t rssi, uint32_t wifiMs) {
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
 
   bool connected;
@@ -97,7 +99,7 @@ static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
   const size_t len = serializeJson(doc, payload, sizeof(payload));
 
   // Retained, so the dashboard always shows the last known reading.
-  const bool ok = mqtt.publish(topic, (const uint8_t *)payload, len, true);
+  const bool ok = mqtt.publish(topic, reinterpret_cast<const uint8_t *>(payload), len, true);
   if (ok) {
     Serial.printf("published %s %s\n", topic, payload);
   }
@@ -113,7 +115,7 @@ static void goToSleep() {
   WiFi.mode(WIFI_OFF);
   Serial.printf("sleeping for %d s\n", SLEEP_INTERVAL_S);
   Serial.flush();
-  esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_INTERVAL_S * 1000000ULL);
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(SLEEP_INTERVAL_S) * 1000000ULL);
   esp_deep_sleep_start();
 }
 
@@ -137,8 +139,9 @@ void setup() {
   const uint32_t wifiStart = millis();
   if (connectWifi()) {
     const uint32_t wifiMs = millis() - wifiStart;
-    const long rssi = WiFi.RSSI();
-    Serial.printf("wifi up in %u ms, rssi %ld dBm\n", wifiMs, rssi);
+    const int32_t rssi = WiFi.RSSI();
+    Serial.printf("wifi up in %u ms, rssi %d dBm\n", wifiMs,
+                  static_cast<int>(rssi));
     published = publishState(fenceMv, fenceKv, battV, rssi, wifiMs);
   } else {
     Serial.println("wifi connect timed out");
