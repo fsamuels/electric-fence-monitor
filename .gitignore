@@ -1,0 +1,5 @@
+# Per-node secrets and calibration — copy from config.example.h
+firmware/src/config.h
+
+# PlatformIO build output
+firmware/.pio/
