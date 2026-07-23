@@ -81,6 +81,11 @@ Guiding principle: **retire the highest-risk unknowns first.** The peak detector
 
 **Exit criteria:** monitor's reported kV agrees with the handheld tester within an accepted tolerance (suggest ±5%) across the operating range; calibration procedure written down so it's repeatable for future nodes.
 
+Once `Rbleed` and the rest of the sensing chain are stable coming out of this
+phase, the custom PCB in [hardware/pcb-design-plan.md](../hardware/pcb-design-plan.md)
+becomes worth designing — see that doc for why it waits until now rather than
+starting earlier.
+
 ---
 
 ## Phase 5 — Enclosure & Weatherproofing
@@ -107,7 +112,7 @@ Guiding principle: **retire the highest-risk unknowns first.** The peak detector
 - [ ] Design and install horse-proof mounting: out of reach or armored; no dangling leads a horse can catch; fence lead and ground lead protected (conduit or routing along the post)
 - [ ] Drive the dedicated ground rod at the deployment site
 - [ ] Observe for a multi-week shakedown period: reading stability, battery/solar behavior through weather, enclosure condition
-- [ ] Revisit and finalize the BOM with actual sourced part numbers (`hardware/BOM.md`)
+- [ ] Revisit and finalize the BOM with actual sourced part numbers (see [hardware/logic-power-board-schematic.md](../hardware/logic-power-board-schematic.md#bom))
 
 **Exit criteria:** ≥2 weeks unattended operation with continuous reporting, stable calibration, healthy battery, and no physical damage.
 
