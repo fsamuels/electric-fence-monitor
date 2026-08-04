@@ -35,6 +35,8 @@ Start with **one prototype unit**, but design for a small number of additional n
 ## Hardware
 
 Full design rationale and build sequence in [docs/hardware-plan.md](docs/hardware-plan.md).
+Custom PCB plan, schematics, and BOM in [hardware/](hardware/) — start with
+[hardware/pcb-design-plan.md](hardware/pcb-design-plan.md).
 
 ### Compute Platform: ESP32
 
@@ -187,6 +189,11 @@ docs/
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)
 firmware/                 ESP32 node firmware (PlatformIO/Arduino) — see firmware/README.md
+hardware/
+  pcb-design-plan.md            Custom PCB scope, sequencing, tool choice, JLCPCB fab walkthrough
+  voltage-divider-schematic.md  HV sensing chain (divider + peak detector) — stays hand-wired, off-board
+  logic-power-board-schematic.md  Logic & Power board — the actual PCB target, with BOM
+  images/                       Rendered schematic images + the script that generates them
 ```
 
-Planned as the project progresses: `hardware/` (schematics, BOM with sourced part numbers) and `docs/calibration.md` (per-node calibration records).
+Planned as the project progresses: `docs/calibration.md` (per-node calibration records).

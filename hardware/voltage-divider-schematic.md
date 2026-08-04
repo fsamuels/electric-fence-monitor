@@ -11,6 +11,15 @@ firmware calibration constant (see [firmware/src/config.h](../firmware/src/confi
 > rod is **dedicated** and must not be tied to the charger's ground system. See the
 > [README safety section](../README.md#safety).
 
+This chain stays **hand-wired, off-board** even after the rest of the
+electronics move to a custom PCB — see [pcb-design-plan.md](pcb-design-plan.md)
+for why the HV divider specifically doesn't belong on a compact board, and
+[logic-power-board-schematic.md](logic-power-board-schematic.md) for what the
+PCB covers instead. Rendered view of the same circuit described in ASCII
+below:
+
+![HV sensing chain schematic](images/hv-sensing-chain-schematic.svg)
+
 ---
 
 ## Sensing chain (fence → ADC)
