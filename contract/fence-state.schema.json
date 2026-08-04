@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reigncloudranch.local/contract/fence-state.schema.json",
+  "title": "FenceState",
+  "description": "MQTT payload for fence/<node_id>/state — authoritative contract shared by firmware, ingest, and mock publisher.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "node_id",
+    "fw",
+    "kv",
+    "adc_mv",
+    "batt_v",
+    "rssi",
+    "boot",
+    "failed_pub",
+    "wifi_ms"
+  ],
+  "properties": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+      "description": "Opaque topic-safe node identifier. Must agree with the MQTT topic segment. Not assumed to be a MAC or fixed-width hex."
+    },
+    "fw": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Firmware version (semver), e.g. 0.1.0"
+    },
+    "kv": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 12,
+      "description": "Advisory on-node kV estimate; backend recomputes from adc_mv at query time"
+    },
+    "adc_mv": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3300,
+      "description": "Peak fence ADC reading in millivolts — measurement of record"
+    },
+    "batt_v": {
+      "type": "number",
+      "minimum": 2.8,
+      "maximum": 4.3,
+      "description": "Battery voltage in volts"
+    },
+    "rssi": {
+      "type": "integer",
+      "minimum": -90,
+      "maximum": -30,
+      "description": "Wi-Fi RSSI in dBm at association time"
+    },
+    "boot": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic wake counter; resets to 0 on power loss"
+    },
+    "failed_pub": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Cumulative publish failures since boot; resets with boot"
+    },
+    "wifi_ms": {
+      "type": "integer",
+      "minimum": 500,
+      "maximum": 15000,
+      "description": "Milliseconds from Wi-Fi begin to association"
+    },
+    "ts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reserved: UTC epoch seconds when the reading was taken"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Reserved: monotonic per-node reading counter"
+    },
+    "report_interval_s": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Reserved: routine heartbeat interval in seconds"
+    },
+    "sample_interval_s": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Reserved: fence sampling interval in seconds"
+    },
+    "temp_c": {
+      "type": "number",
+      "description": "Reserved: enclosure temperature in Celsius"
+    }
+  }
+}

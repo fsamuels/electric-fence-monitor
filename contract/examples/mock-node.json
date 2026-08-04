@@ -1,0 +1,11 @@
+{
+  "node_id": "mock-0001",
+  "fw": "0.1.0",
+  "kv": 7.01,
+  "adc_mv": 1895,
+  "batt_v": 4.05,
+  "rssi": -58,
+  "boot": 42,
+  "failed_pub": 0,
+  "wifi_ms": 1200
+}

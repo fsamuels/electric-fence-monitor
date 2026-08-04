@@ -1,0 +1,11 @@
+{
+  "node_id": "a4c1385f2b10",
+  "fw": "0.1.0",
+  "kv": 6.93,
+  "adc_mv": 1872,
+  "batt_v": 3.98,
+  "rssi": -71,
+  "boot": 123,
+  "failed_pub": 2,
+  "wifi_ms": 2300
+}
