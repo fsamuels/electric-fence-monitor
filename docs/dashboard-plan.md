@@ -13,7 +13,11 @@ needs to know whether a reading came from a simulated node or a real one.
 
 **The one axis where mock deliberately differs from real is time**, and it
 differs by a lot: the mock publisher runs at an accelerated cadence (seconds)
-while a real node sleeps 10–15 minutes between reports. Everything
+while a real node sleeps 10–15 minutes between reports (a default that is
+itself challenged in
+[Reporting cadence and alert latency](#reporting-cadence-and-alert-latency) —
+the recommendation there is to sample every minute and report every 15).
+Everything
 time-dependent — chart ranges, consecutive-reading counts, silence timeouts,
 row volume — behaves differently under the two. That gap is managed
 explicitly rather than ignored: see [Time scale](#time-scale-mock-vs-real)
@@ -162,6 +166,116 @@ repo root as the authoritative definition; the mock publisher generates
 against it, the ingest parser validates against it, and both READMEs point at
 it instead of restating it.
 
+#### Field by field
+
+`firmware/README.md` documents these from the producer's side. This table is
+the *consumer's* view: what each field is, what values are plausible, and what
+the dashboard actually does with it. "Plausible range" is what the mock
+publisher generates and what the ingest validator should accept — a value
+outside it is a bug signal, not a fence event.
+
+| Field | Type | Unit | Plausible range | Where it comes from | What the dashboard does with it |
+|---|---|---|---|---|---|
+| `node` | string | — | `^[a-z0-9][a-z0-9-]{1,30}$` | `NODE_ID` in per-node `config.h` | Primary key. Routes the reading to a card; also the topic segment it arrived on (the two must agree — see below) |
+| `fw` | string | — | semver, e.g. `0.1.0` | `FW_VERSION` compile-time constant | Shown on the node detail; lets you spot a node that missed an OTA rollout. Stored per reading, so a bad release is attributable after the fact |
+| `kv` | float | kV | 0–12 | `adc_mv × CAL_KV_PER_MV + CAL_KV_OFFSET`, computed on-device | **Advisory only.** The node uses it to decide whether a reading warrants an immediate transmit; the backend recomputes kV from `adc_mv` and is authoritative for display and alerting — see [Calibration](#calibration) |
+| `adc_mv` | int | mV | 0–3300 | Max of a 2.5 s multi-sample burst on the peak-detector output | **The measurement of record.** Everything downstream derives kV from this at query time, so recalibration repairs all history retroactively instead of leaving a discontinuity. Also what's displayed when no calibration covers the reading |
+| `batt_v` | float | V | 2.8–4.3 | Battery divider on `PIN_BATT_ADC`, 8-sample average | Battery gauge, and the **"dead node vs. dead fence" discriminator**: a silent node whose last `batt_v` was sagging is a power problem; one that was healthy is a Wi-Fi or hardware problem. Different diagnosis, different response |
+| `rssi` | int | dBm | −90 to −30 | `WiFi.RSSI()` at the moment of association | Link-quality indicator. Feeds the antenna-vs-LoRa decision with measured data instead of guesswork |
+| `boot` | int | count | monotonic, resets to 0 on power loss | RTC memory counter, survives deep sleep | Wake counter. A **reset to 0 means the node lost power entirely** — brown-out, battery disconnect, or a swap. That's a distinct event from a reboot and worth surfacing |
+| `failed_pub` | int | count | monotonic, resets with `boot` | Incremented on any wake that fails to publish | Cumulative missed transmissions. Rising = the link is degrading. Note it counts *connection* failures only — a QoS 0 message lost in flight increments nothing |
+| `wifi_ms` | int | ms | 500–15000 | Time from `WiFi.begin()` to association | How hard the node had to work to get online. Trending up is an early weak-signal warning; at the `WIFI_TIMEOUT_MS` ceiling (15000) the node gave up |
+
+Three of these — `rssi`, `failed_pub`, `wifi_ms` — are deliberately *not*
+fence data. They describe the health of the reporting path, and they're in the
+payload specifically so the antenna-vs-LoRa decision (software plan
+Connectivity Contingency) can be made from field measurements. They drive the
+link-quality indicator, kept visually separate from fence status.
+
+A note on `boot` and `failed_pub`: both are **cumulative counters, not
+per-message deltas**, and both reset on power loss. Chart them as rates
+(difference between consecutive readings) rather than raw values, and treat a
+decrease as a reset event rather than clamping it to zero.
+
+#### Node identity — `node` is a *location*, not a board
+
+Worth settling before nodes 2–5 exist, because it's painful to change once
+history has accumulated under the wrong scheme.
+
+There are two different identities here and the current design conflates them:
+
+- **Deployment identity** — *which point on the fence line is this?*
+- **Device identity** — *which physical ESP32 is this?*
+
+They have different lifecycles, and one identifier can't serve both:
+
+- Swap a failed board at the north gate → device changes, location doesn't.
+  You want that location's history to continue uninterrupted.
+- Move a working board from the north gate to the creek crossing → device is
+  the same, location changed. You emphatically do *not* want the history to
+  continue as though it's the same measurement point.
+
+Whichever one you pick as the single id, one of those two routine operations
+silently corrupts the record. And the secondary project goal —
+fault localization by comparing voltage across points — is inherently about
+*locations*, so location has to be the thing the data is keyed on.
+
+**Scheme:**
+
+| | Value | Assigned by | Stable across |
+|---|---|---|---|
+| `node` (topic segment, DB key, display) | Human-readable location slug: `north-gate`, `creek-crossing`, or `fence-01` if you prefer numbering | Human, in `config.h` | Board swaps |
+| `chip_id` (new payload field) | Low 6 bytes of `ESP.getEfuseMac()`, hex | Factory eFuse — no config, cannot collide | Everything; it *is* the board |
+| MQTT **client id** | `<node>-<chip_id suffix>` | Derived at runtime | — |
+
+Human-readable wins for `node` because it's the thing you'll read in topic
+strings while debugging (`mosquitto_sub -t 'fence/north-gate/state'`), in
+Mosquitto ACL files, in the dashboard, and in `docs/calibration.md`. A UUID or
+bare MAC is collision-proof but turns every one of those into a lookup.
+
+Adding `chip_id` costs one field and buys three things:
+
+1. **Detects a duplicate `node`** — two boards flashed with the same
+   `config.h` produce interleaved readings under one id, which otherwise looks
+   like an erratic fence rather than an inventory mistake.
+2. **Records board swaps** — same `node`, new `chip_id` is a real event: the
+   location's history continues, and the swap is visible on the timeline where
+   it belongs.
+3. **Fixes the client-id collision structurally.** The firmware currently uses
+   `NODE_ID` as its MQTT client id, so two nodes sharing an id evict each
+   other in a reconnect loop. Client id derived from the chip is unique by
+   construction, while the topic stays location-stable. Both problems, one
+   change.
+
+**Constraints on the `node` string**, since it's simultaneously a topic
+segment, part of a client id, and a database key:
+
+- No `/`, `+`, `#`, whitespace, or non-ASCII — `/` and the wildcards would
+  break topic routing outright.
+- Lowercase kebab-case, 2–31 chars: `^[a-z0-9][a-z0-9-]{1,30}$`. Enforced in
+  the contract schema and rejected at ingest rather than auto-creating a
+  phantom node.
+- Keep it short. The MQTT spec only guarantees 23-character client ids;
+  Mosquitto is more permissive, but there's no reason to test it.
+- The firmware builds the topic into a fixed `char topic[64]` via `snprintf`,
+  which truncates *silently* — a long id would publish to a subtly wrong
+  topic. The 31-char cap leaves ample headroom, and a compile-time
+  `static_assert` on `sizeof(NODE_ID)` makes it impossible to get wrong.
+
+**Ingest must verify `node` matches the topic it arrived on.** They're
+independent inputs — the firmware could publish `{"node": "north-gate"}` to
+`fence/creek-crossing/state` after a partial config edit. Mismatch is a
+misconfiguration, not a reading; reject it loudly.
+
+**Calibration keys on the pair, not on `node` alone.** The calibration
+constant is a physical property of a specific divider chain *and* a specific
+board's ADC. The hand-wired HV chain stays at the fence while the board is
+swappable, so `docs/calibration.md` records `(node, chip_id, date)` and any
+board swap invalidates the constant until re-verified against the handheld
+tester. Recording it against `node` alone would silently carry a stale
+constant onto new hardware — producing wrong-but-plausible kV, the exact
+failure mode the provisional-reading treatment exists to prevent.
+
 #### Reserved optional fields — add to the contract now
 
 The firmware doesn't send these yet and doesn't have to. Reserving them costs
@@ -173,6 +287,8 @@ status derivation, and the charts all sit on:
 | `ts` | int (epoch seconds, UTC) | When the node *took* the reading | Fall back to receipt time |
 | `seq` | int | Monotonic per-node reading counter | Fall back to `(node, boot)` |
 | `sleep_interval_s` | int | This node's configured duty cycle | Fall back to configured per-node default |
+| `chip_id` | string (hex) | Device identity from the ESP32 eFuse MAC | Board swaps and duplicate-`node` detection unavailable; see [Node identity](#node-identity--node-is-a-location-not-a-board) |
+| `temp_c` | float | Enclosure temperature | No temperature compensation of the peak-detector diode drift; see [Calibration](#calibration) |
 
 `ts` matters more than it looks. Software plan Phase 4 already commits to
 buffering readings in RTC memory across failed transmits and flushing on
@@ -224,9 +340,27 @@ weak mesh Wi-Fi that is already a named project risk. Two implications:
 
 ### Storage
 
-`nodes` table: `node_id` (PK), `first_seen`, `fw_version`, `sleep_interval_s`,
-`calibrated` (bool, see [Frontend](#frontend)). Calibration *constants* stay
-deferred to `docs/calibration.md` per the software plan — not duplicated here.
+`nodes` table: `node_id` (PK), `first_seen`, `fw_version`, `chip_id`,
+`sleep_interval_s`. Note there is no `calibrated` boolean — whether a node is
+calibrated is derived from whether a `calibrations` row covers the reading's
+timestamp, which is strictly more informative.
+
+`calibrations` table: `node_id`, `chip_id`, `valid_from`, `valid_to`,
+`kv_per_mv`, `kv_offset`, `method`, `points` (JSON — the raw measurement pairs,
+kept so the fit can be redone), `notes`. Versioned rather than mutated, so a
+reading is always converted with the constants that were valid when it was
+taken. This is what makes `kv` a **query-time computation over stored
+`adc_mv`** rather than a value frozen on the device — see
+[Calibration](#calibration) for why that's the whole point.
+`docs/calibration.md` stays the human-readable record; this table is what the
+API reads.
+
+`fence_events` table: `ts`, `node_id` (nullable — some events are
+property-wide), `kind`, `note`. Operator-annotated timeline of deliberate
+physical changes: wire added or removed, charger changed, vegetation cleared,
+grounding modified, board swapped, recalibrated. Without it, every intentional
+change is indistinguishable from a developing fault for the rest of the
+node's life.
 
 **No `last_seen` column.** It would be a denormalized copy of
 `max(readings.ts)` needing an update on every insert, and the two will diverge
@@ -382,13 +516,20 @@ So: **24h / 7d / 30d / season**, with `bucket` set per range. Develop against
 backfilled data at real spacing (see Mock publisher) so the chart is tuned
 against the density it will actually receive.
 
-**Uncalibrated nodes are marked as such.** Until hardware Phase 4 calibration
-completes, `CAL_KV_PER_MV` is theoretical divider math and the reported `kV`
-is wrong-but-plausible — the worst kind of wrong, because it invites debugging
-the fence when the problem is a constant in `config.h`. A node with
-`calibrated = false` shows its kV visibly provisional and displays `adc_mv`
-alongside it. This is what makes the D6 window (real hardware reporting,
-calibration not yet done) survivable.
+**Readings with no calibration behind them are marked as such.** Until
+hardware Phase 4 calibration completes, the constants are theoretical divider
+math and the derived kV is wrong-but-plausible — the worst kind of wrong,
+because it invites debugging the fence when the problem is a number in a
+config. A reading with no `calibrations` row covering its timestamp shows its
+kV visibly provisional and displays `adc_mv` alongside it. Because calibration
+is versioned and applied at query time, this resolves itself retroactively the
+moment a calibration row is added — the D6 window (real hardware reporting,
+calibration not yet done) becomes survivable rather than a data gap.
+
+**Charts annotate `fence_events`.** Deliberate physical changes — wire added,
+charger serviced, vegetation cleared, board swapped, recalibrated — render as
+markers on the time series. This is the difference between a step change
+reading as "something broke here" versus "we extended the fence here."
 
 ### Mock publisher
 
@@ -433,6 +574,313 @@ same time:
 - Mock nodes are namespaced `mock-01`…`mock-05`, so `fence-01` is
   unambiguously the real hardware and mock data is trivially separable in the
   database afterward.
+
+---
+
+## Reporting cadence and alert latency
+
+The firmware currently sleeps 600 s between reports, which means a downed
+fence can go unnoticed for ten minutes — and, as shown below, considerably
+longer than that once alert debouncing is accounted for. That is worth
+challenging. This section works the trade rather than assuming the default.
+
+**All numbers here are estimates.** The energy budget falls out of hardware
+Phase 3, which hasn't been built. They're good enough to rank the options and
+to show that the obvious answer isn't the best one; they are not good enough
+to commit to a value.
+
+### The precondition that dominates everything else
+
+Before cadence matters at all: **a stock ESP32 dev board draws 5–20 mA in
+deep sleep**, because of its LDO regulator and USB-serial chip. At 10 mA
+that's 240 mAh/day doing nothing — which exceeds the wake-cycle cost of
+*every* option below, including reporting four times a minute. On a stock dev
+board the runtime is ~10 days regardless of cadence, and this entire analysis
+is noise.
+
+The custom Logic & Power board (`hardware/logic-power-board-schematic.md`)
+should reach 20–50 µA. **Cadence only becomes a real decision once that board
+exists.** Until then, measure sleep current first — it's the whole budget.
+
+### Where the energy actually goes
+
+Per wake cycle, from `firmware/src/main.cpp` and `config.example.h`:
+
+| Phase | Duration | Est. current | Energy |
+|---|---|---|---|
+| ADC sampling (`SAMPLE_WINDOW_MS`, radio off) | 2.5 s | ~45 mA | 0.031 mAh |
+| Battery read (8 samples) | ~20 ms | ~45 mA | negligible |
+| Wi-Fi associate + MQTT publish | ~3 s typical | ~120 mA | 0.100 mAh |
+| **Full report cycle** | **~5.5 s** | | **~0.131 mAh** |
+| **Sample-only cycle (radio never comes up)** | **2.5 s** | | **~0.031 mAh** |
+
+The important structural fact: **bringing up the radio costs ~4× what
+sampling costs.** Sampling is cheap; talking is expensive. Every option below
+follows from that.
+
+Assumes 2500 mAh usable from an 18650 (derated) and 20 µA sleep
+(0.5 mAh/day).
+
+### Options
+
+| | Strategy | Cycles/day | mAh/day | Battery-only reserve | Fence-down latency |
+|---|---|---|---|---|---|
+| **A** | Report every 10 min *(current)* | 144 | 19.4 | ~129 days | ≤ 10 min |
+| **B** | Report every 1 min | 1,440 | 189 | ~13 days | ≤ 1 min |
+| **C** | Report every 15 s | 5,760 | 755 | ~3.3 days | ≤ 15 s |
+| **D** | **Sample every 1 min, report every 15 min, transmit immediately on fault** | 1,440 sample / 96 report | 54.8 | **~45 days** | **≤ 1 min** |
+
+**D dominates B.** Same one-minute detection latency, roughly a third of the
+energy, and 3.5× the battery reserve — because the fence is fine almost all
+the time, and transmitting "still fine" once a minute is the expensive part.
+Sample often, talk rarely, and interrupt immediately when something is
+actually wrong.
+
+**C is the one to be wary of**, and not primarily for battery-life reasons.
+At a 15 s interval the node is awake ~37% of the time, so it isn't a
+duty-cycled sensor any more. More importantly the reserve drops to ~3 days:
+a four-day winter overcast blinds the node, and a blind node means the fence
+state is *unknown* — which this plan already treats as alert-worthy. That
+trades a known, bounded latency for an increased chance of total blindness.
+Bad trade.
+
+Solar is not the binding constraint for A, B, or D. A 5 W panel yields
+~1.5–7.5 Wh/day depending on season, against 0.07 Wh/day (A), 0.70 (B), and
+0.20 (D). What matters is **reserve for consecutive dark days**, which is the
+column above.
+
+### The latency number is not the sleep interval
+
+This is the part most likely to be mis-estimated. End-to-end time from
+"fence goes down" to "phone buzzes":
+
+```
+sleep interval (≤ 600 s)
+  + sample window (2.5 s)
+  + Wi-Fi associate + publish (~3 s, or 15 s on timeout)
+  + N consecutive readings required to confirm      ← the multiplier
+  + alerting scheduler interval
+  + any QoS 0 message lost in flight (adds a full interval)
+```
+
+The debounce is the dominant term, because it *multiplies* the interval.
+The plan requires 2–3 consecutive low readings before alerting, precisely so
+one noisy sample doesn't page anyone at 6 a.m.:
+
+| Cadence | N=3 confirmation | Realistic worst case with one lost message |
+|---|---|---|
+| 10 min | **30 min** | ~40 min |
+| 1 min | **3 min** | ~4 min |
+
+So the current design's real low-voltage alert latency is closer to **30–40
+minutes** than to ten. That reframes the question: faster cadence doesn't just
+reduce latency linearly, it makes the debounce *affordable*. At one-minute
+sampling you can require three confirmations and still alert in three minutes.
+That's better fence detection **and** fewer false alarms — the two normally
+trade against each other, and here they don't.
+
+A `down` reading (< 1 kV or pinned at zero) should use a shorter debounce than
+`low` — N=2 — since it's higher urgency and less likely to be noise.
+
+### Second-order cost: the mesh
+
+At option C, five nodes generate ~28,800 Wi-Fi associations/day on a mesh
+that is *already known to be weak* at these locations. Failures aren't free:
+a failed association burns the full `WIFI_TIMEOUT_MS` (15 s at ~100 mA
+≈ 0.42 mAh), **3× the cost of a successful cycle**. So failures are
+disproportionately expensive and cluster exactly at the weakest nodes —
+the degradation is nonlinear, and the worst-placed node drains fastest.
+
+### Recommendation
+
+**Adopt D**, with sample and report intervals as separate config values:
+
+- `SAMPLE_INTERVAL_S` — how often to read the fence (start at 60)
+- `REPORT_INTERVAL_S` — how often to transmit a routine heartbeat (start at 900)
+- Transmit immediately, out of band, when a reading crosses a fault threshold
+- Optionally adapt: after one marginal reading, drop to fast reporting until
+  the state resolves
+
+Two consequences worth naming:
+
+1. **This is a firmware change**, in software plan Phase 2/4 territory — a
+   single `SLEEP_INTERVAL_S` becomes two intervals plus threshold state held
+   in RTC memory. Not a dashboard change.
+2. **It makes `ts` mandatory rather than optional.** Once sampling and
+   reporting decouple, a heartbeat carries readings taken minutes before it
+   was sent, and receipt time is simply wrong for all of them. This is the
+   same buffering problem Phase 4 already anticipated, arriving sooner — and
+   it's exactly why `ts` and `seq` are reserved in the contract now. The
+   reservation pays for itself here.
+
+Backend-side, nothing structural changes: `sleep_interval_s` in the payload
+already carries the cadence per node, and every window is defined as a
+multiple of it rather than in absolute seconds.
+
+**Open until hardware Phase 3:** the actual measured sleep current, wake
+duration, and association time. If measured sleep current lands near the dev
+board's 5–20 mA rather than the custom board's 20–50 µA, revisit this whole
+section — the conclusion changes completely.
+
+---
+
+## Calibration
+
+### What the sensor actually measures — and what it doesn't
+
+The divider measures **the peak potential between the fence wire at the tap
+point and the local sensing ground rod.** That's it. Calibration's only job is
+mapping `adc_mv → volts at that tap point`.
+
+This matters because most site-to-site variation is **signal, not calibration
+error**, and conflating the two leads to trying to calibrate away the very
+thing the system exists to detect:
+
+| Varies by site | Is it a calibration problem? |
+|---|---|
+| Charger model / energy rating | **No.** Different input voltage — measure it |
+| Fence length, wire gauge, number of strands | **No.** More load sags the charger; the sag *is* the reading |
+| Vegetation contact, wet insulators, leakage | **No.** This is the fault the project exists to catch |
+| Distance from charger | **No.** Voltage drop along the line is the Phase 7 localization signal |
+| Divider resistor tolerance | **Yes** — dominant gain error |
+| Peak-detector diode forward drop | **Yes** — dominant *offset* error, and temperature-dependent |
+| RC droop between pulses | **Yes** — systematic underestimate |
+| ESP32 ADC nonlinearity | **Yes** — ±2–3% even with factory calibration |
+| Sensing ground rod soil resistance | **Barely.** See below |
+
+A longer fence that sags to 5.5 kV should *report* 5.5 kV. If calibration were
+re-tuned at each site to make every fence read ~7 kV, the system would be
+tuned to hide exactly what it's supposed to surface.
+
+**Soil resistance is a non-issue, contrary to intuition.** The ground rod's
+resistance to earth (10 Ω–5 kΩ depending on soil) sits in series with a
+1 GΩ + 270 kΩ divider. Even a terrible 5 kΩ rod is ~0.0005% of the chain —
+lost in the noise of a 1% resistor. What *is* real, though second-order, is
+earth potential gradient: during a pulse, return current through the soil
+raises local earth potential, so a sensing rod near the charger's ground reads
+against a shifted reference. Expect ~1–5% at typical separations, and prefer
+siting the sensing rod well away from the charger ground — which the design
+already requires for isolation reasons.
+
+### The error budget is dominated by the diode, not the resistors
+
+| Source | Type | Rough magnitude at 7 kV (~1.89 V at the ADC) |
+|---|---|---|
+| **Peak-detector diode Vf** | Offset | **0.3–0.5 V → 15–25%** |
+| RC droop between pulses | Gain | 2–10%, depends on tuned RC |
+| ADC nonlinearity | Both | 2–3% |
+| Rsense tolerance (1%) | Gain | 1% |
+| Divider stack (10× 1%) | Gain | 0.3–1% |
+
+The diode drop dwarfs everything else, which has two consequences:
+
+1. **Single-point calibration is not enough.** `kv = adc_mv × CAL_KV_PER_MV +
+   CAL_KV_OFFSET` is the right *shape* — gain plus offset — but two unknowns
+   need at least two points, and realistically 3–5 across 5–10 kV to confirm
+   the response is actually linear rather than assumed to be.
+2. **Calibration drifts with temperature.** Silicon Vf moves about
+   −2 mV/°C. A −10 °C to +40 °C swing is ~100 mV at the ADC ≈ **0.37 kV
+   apparent shift** — roughly 7% of the 5 kV alert threshold, in a system
+   deployed outdoors year-round. A node calibrated in July will read
+   differently in January with no physical change to the fence.
+
+**Reserve `temp_c` in the contract now** (see the optional-fields table).
+Backend-side temperature compensation is cheap once the data exists and
+impossible to reconstruct retroactively — the same argument as `ts`. Note the
+ESP32's internal sensor is self-heated and poor; a small external sensor in
+the enclosure is the useful version.
+
+### Where calibration is applied: the backend, not the node
+
+This is the important architectural call, and the plan already accidentally
+set it up correctly.
+
+`adc_mv` is stored raw on every reading. That means **kV can be computed at
+query time from a per-node calibration record in the database**, rather than
+being baked in on-device. The consequences are large:
+
+- **Recalibration is a database update.** No site visit, no reflash, no OTA.
+- **It applies retroactively.** Fixing a bad constant repairs the entire
+  history rather than leaving a discontinuity at the moment of the fix.
+- **Calibration becomes versioned data**, with a validity window — so a
+  reading from March uses March's constants and one from October uses
+  October's, which is what makes seasonal recalibration coherent instead of
+  destructive.
+
+The node still computes its own `kv`, but only for one purpose: deciding
+locally whether a reading is bad enough to justify an immediate out-of-band
+transmit (see [Reporting cadence](#reporting-cadence-and-alert-latency)). The
+on-device constant can be coarse. **The backend's value is authoritative for
+display and alerting**; the payload's `kv` is advisory.
+
+Storage: a `calibrations` table — `node_id`, `chip_id`, `valid_from`,
+`valid_to`, `kv_per_mv`, `kv_offset`, `method`, `points` (the raw measurement
+pairs), `notes`. `docs/calibration.md` remains the human-readable record;
+this table is what the API actually reads.
+
+The on-device constant should still be updatable without a reflash — NVS plus
+a retained `fence/<node>/config` topic — because a node whose local threshold
+is badly wrong will either spam immediate-transmits or fail to send them. But
+that's a coarse safety setting, not the measurement path.
+
+### Field procedure
+
+The awkward part: you can't easily *dial* a fence to a known voltage. Three
+practical sources of multi-point data, in preference order:
+
+1. **Charger power settings**, if the energizer has them — cleanest way to get
+   distinct levels at a fixed tap point.
+2. **Natural variation along the line** — measure at 3–5 points with the
+   handheld tester, pairing each reading with the node's `adc_mv`. Works
+   without any charger control.
+3. **Bench characterization first** (hardware Phase 1–2), so the sensing chain
+   is understood before deployment and field work reduces to an offset trim.
+
+Fit gain and offset, record the points (not just the derived constants — so
+the fit can be redone later), and open a new `calibrations` row rather than
+editing the old one.
+
+**Re-verify calibration after:** a board swap, a divider or peak-detector
+component change, cable length changes between tap and enclosure (it adds to
+the peak-detector capacitance and shifts RC), and at least once across a
+seasonal temperature swing until drift is characterized.
+
+### Adding fence wire to an existing monitored fence
+
+The direct answer: **nothing happens to calibration.** The ADC-to-volts
+mapping is a property of the sensing chain, not of the fence. Adding 500 m of
+wire changes the load, the charger sags, and the node correctly reports a
+lower voltage. That's the system working.
+
+What *does* need to happen is **re-baselining**, and it's easy to overlook:
+
+- **Steady-state moves.** Say the fence drops 7.2 kV → 6.4 kV. Still above the
+  5 kV threshold, so nothing alerts — but the margin just shrank by 40% and
+  nobody was told.
+- **The trend detector misfires.** The slow-decline tier watches for gradual
+  drops indicating vegetation load. A step change from an intentional
+  extension looks like a fault unless the baseline is reset.
+- **Per-node thresholds may need revisiting.** They're already specified as
+  per-node config; this is the moment that flexibility earns its place.
+- **Multi-node relationships shift.** Extending the line *between* the charger
+  and a node increases upstream load for every node beyond it, changing the
+  comparative pattern the Phase 7 fault localization depends on.
+
+So the plan needs an operator-annotated event timeline — a `fence_events`
+table: `ts`, `node_id` (nullable for property-wide events), `kind`, `note`.
+Kinds: wire added or removed, charger changed or serviced, vegetation cleared,
+grounding modified, board swapped, recalibrated.
+
+Cheap to build, and without it every deliberate physical change looks like an
+anomaly forever afterward — the trend tier has no way to distinguish "someone
+extended the fence on 12 March" from "something has been slowly going wrong
+since 12 March." It also gives the charts annotation markers, which is the
+single most useful thing you can overlay on a long time series.
+
+This connects to the board-swap detection via `chip_id`: a swap can raise a
+`fence_events` row automatically. Most other events need a human to record
+them, which is a UI affordance worth having — a "log a change" button beats a
+markdown file nobody updates.
 
 ---
 
@@ -750,14 +1198,14 @@ are not, and this is where the plan's mock-vs-real assumptions get audited.
 **Cutover:**
 - [ ] Point real firmware's `MQTT_HOST` config at this broker (dev, then wherever it's deployed)
 - [ ] Confirm no client-id collision: real node is `fence-01`, mock publishers are `mock-pub-<n>`
-- [ ] Mark the real node `calibrated = false` until hardware Phase 4 completes; expect wrong-but-plausible kV and read `adc_mv` in the meantime
+- [ ] Leave the real node with no `calibrations` row until hardware Phase 4 completes; expect wrong-but-plausible kV and read `adc_mv` in the meantime
 - [ ] Retire mock nodes (keep the publisher — it's the test fixture and the CI dependency); mock data is separable by the `mock-` prefix
 
 **Re-tune against reality:**
 - [ ] Confirm `sleep_interval_s` is correct per node and `silent` doesn't false-fire
 - [ ] Expect `silent` to be common, not exceptional — weak mesh Wi-Fi is a top-5 project risk and QoS 0 loses messages silently. Tune the threshold against observed loss rate rather than theory
 - [ ] Feed observed `rssi` / `wifi_ms` / `failed_pub` into the antenna-vs-LoRa decision (software plan Connectivity Contingency)
-- [ ] Set `calibrated = true` and record constants in `docs/calibration.md` after hardware Phase 4
+- [ ] After hardware Phase 4: insert the `calibrations` row (with `valid_from` backdated to the node's first reading, so existing history is corrected retroactively) and record the derivation in `docs/calibration.md`
 
 **Exit:** a real node's reading appears in the dashboard, indistinguishable in shape from mock data; alerting fires correctly at real cadence; a deliberately powered-down node produces a `silent` alert within the expected window.
 

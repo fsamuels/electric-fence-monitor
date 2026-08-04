@@ -77,11 +77,15 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
 
 **Goal:** the wake → read → transmit → sleep loop, with everything the backend will need.
 
-- [ ] Deep sleep cycle with configurable interval (starting point: every 10–15 min; alert latency vs. power trade-off to be tuned against the hardware Phase-3 energy budget)
+- [ ] Deep sleep cycle with **two** configurable intervals, not one: `SAMPLE_INTERVAL_S` (how often to read the fence, start at 60) and `REPORT_INTERVAL_S` (how often to send a routine heartbeat, start at 900), plus immediate out-of-band transmit when a reading crosses a fault threshold. Bringing the radio up costs ~4× what sampling costs, so sampling often and talking rarely gives ~1 min fault detection at roughly a third the energy of simply reporting every minute — full analysis and numbers in [dashboard-plan.md](dashboard-plan.md#reporting-cadence-and-alert-latency). Requires threshold state held in RTC memory across sleep
+  - Note this makes the `ts` payload field effectively mandatory: once sampling and reporting decouple, a heartbeat carries readings taken minutes earlier and receipt time is wrong for all of them
+  - **Measure deep-sleep current before tuning any of this.** A stock ESP32 dev board draws 5–20 mA asleep, which exceeds the wake-cost of every cadence option and caps runtime near 10 days regardless. Cadence is only a real decision once the custom Logic & Power board brings that to tens of µA
 - [ ] Wi-Fi connect with a bounded timeout — a node in a weak-signal spot must not burn its battery retrying; on failure, log locally (RTC memory counter) and go back to sleep
 - [ ] Telemetry payload: node ID, firmware version, raw ADC max, computed kV, battery voltage, Wi-Fi RSSI, boot/wake counter
   - Battery voltage and RSSI are not optional extras: RSSI feeds the antenna-vs-LoRa decision, battery feeds the "dead node vs. dead fence" distinction
-- [ ] Per-node config (node ID, Wi-Fi credentials, calibration constant, sleep interval) separated from code — build flags or NVS — so nodes 2–5 are a config change, not a code fork
+- [ ] Per-node config (node ID, Wi-Fi credentials, calibration constant, sample/report intervals) separated from code — build flags or NVS — so nodes 2–5 are a config change, not a code fork
+- [ ] **Node identity: `NODE_ID` names a fence *location*, not a board.** A human-readable lowercase-kebab slug (`north-gate`, or `fence-01` if numbering is preferred), `^[a-z0-9][a-z0-9-]{1,30}$` — it's simultaneously an MQTT topic segment, part of the client id, the database key, the ACL subject, and what you read in the dashboard, so it must be readable and must exclude `/`, `+`, `#`, and whitespace. Publish `chip_id` (low 6 bytes of `ESP.getEfuseMac()`) alongside it as *device* identity, and derive the MQTT client id from the chip rather than from `NODE_ID` so two boards sharing a config can't evict each other in a reconnect loop. Full rationale — including why one identifier can't serve both a board swap and a node relocation — in [dashboard-plan.md](dashboard-plan.md#node-identity--node-is-a-location-not-a-board)
+  - Add a `static_assert` on `sizeof(NODE_ID)`: the topic is built into a fixed `char topic[64]` via `snprintf`, which truncates silently and would publish to a subtly wrong topic
 - [ ] Publish via MQTT: `fence/<node-id>/state` as a JSON document, with MQTT retain so the dashboard shows the last reading immediately
 
 **Exit criteria:** bench unit runs the full cycle unattended for 24 h; measured awake-time matches the hardware energy budget assumptions.
@@ -90,9 +94,13 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
 
 **Goal:** readings in real kV, per node.
 
+**Calibration is applied in the backend, not on the node.** `adc_mv` is stored raw on every reading, so kV is computed at query time from a versioned per-node calibration record — which means recalibration is a database update that fixes all history retroactively, with no site visit and no reflash. The on-device constant survives only so the node can decide locally whether a reading is bad enough to warrant an immediate out-of-band transmit; it can be coarse. Full rationale and error budget in [dashboard-plan.md](dashboard-plan.md#calibration).
+
 - [ ] Calibration mode (e.g., held pin at boot, or MQTT command): rapid readings streamed while someone at the fence compares against the handheld tester
-- [ ] Store the derived constant/curve per node (NVS or config); apply it to compute kV on-device so the payload carries both raw and calibrated values
-- [ ] Document each node's calibration in `docs/calibration.md` (node ID, date, points measured, constant derived)
+- [ ] **Multi-point fit, not single-point.** `kv = adc_mv × gain + offset` has two unknowns, and the peak-detector diode drop (0.3–0.5 V, i.e. 15–25% at 7 kV) makes the offset term dominant — far larger than resistor tolerance. Collect 3–5 points across 5–10 kV to solve both and to confirm the response is linear rather than assume it. Sources of distinct levels, in preference order: charger power settings, natural voltage variation measured at several points along the line, or bench characterization done first in hardware Phase 1–2
+- [ ] Store the on-device constant in **NVS, updatable over MQTT** — not a compile-time `#define`. A constant that requires a reflash to change contradicts Phase 4's premise of a node you never walk to
+- [ ] **Log enclosure temperature (`temp_c` in the payload).** Diode Vf drifts about −2 mV/°C, so a −10 °C to +40 °C seasonal swing is ~0.37 kV of apparent shift — roughly 7% of the 5 kV alert threshold, with no physical change to the fence. Backend-side compensation is cheap once the data exists and impossible to reconstruct retroactively, so log it from the start even if compensation comes later
+- [ ] Document each node's calibration in `docs/calibration.md` keyed on **`(node ID, chip_id, date)`** — the constant is a physical property of a specific divider chain *and* a specific board's ADC, so a board swap invalidates it. Keying on node ID alone would silently carry a stale constant onto new hardware, producing wrong-but-plausible kV. Record points measured and constant derived; mark the node uncalibrated until re-verified after any swap
 
 **Exit criteria:** hardware Phase-4 exit criteria met (agreement with handheld tester within tolerance across 5–10 kV).
 
@@ -132,7 +140,7 @@ Built on the established operating range (typical ~7 kV, minimum acceptable ~5 k
 - [ ] **Low-voltage alert:** kV below ~5 kV. Require N consecutive low readings (e.g., 2–3) before alerting, to avoid one-off noise paging anyone at 6 a.m.
 - [ ] **Fence-down alert:** kV below a floor (e.g., <1 kV) or reading pinned at zero — distinct, higher-urgency alert
 - [ ] **Node-silent alert:** no report for > 2–3× the sleep interval. Distinguish causes where possible: last known battery voltage low → probably node power; battery was healthy → probably Wi-Fi or node failure. Either way the fence state is *unknown*, which is itself alert-worthy
-- [ ] **Trend/warning tier (secondary goal):** slow decline over days (vegetation load growing) as a low-urgency notification before it ever crosses the hard threshold
+- [ ] **Trend/warning tier (secondary goal):** slow decline over days (vegetation load growing) as a low-urgency notification before it ever crosses the hard threshold. Must be baselined against the `fence_events` timeline — a deliberate change (wire added, charger serviced, vegetation cleared) produces a step that otherwise reads as a developing fault forever afterward
 - [ ] Push delivery: ntfy/Pushover from the custom stack. **A minimal single-channel version of this ships in dashboard-plan Phase D5.5**, ahead of this phase — the custom-stack decision means push alerting is the one thing that doesn't arrive for free, and deferring all of it here risks ending up with a good dashboard that never pages anyone. What remains for Phase 6 is the richer behavior below
 - [ ] Alert acknowledgment/quiet hours as needed once real alerts start flowing
 - [ ] **Dead-man's switch** (also D5.5): a dead broker, dead ingest, or dead host is indistinguishable from a quiet healthy fence — nothing inside the stack can detect its own total failure, so an external service must alert when the stack stops checking in. Hard prerequisite before the alert drills below are meaningful
