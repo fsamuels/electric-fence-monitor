@@ -138,3 +138,23 @@ complexity actually demands layout assistance — this one doesn't.
 - Enclosure cutout/mounting layout for two physical boards (HV hand-wired
   section + Logic & Power PCB) instead of one — feeds into
   [hardware-plan.md Phase 5](hardware-plan.md#phase-5--enclosure--weatherproofing).
+- **Temperature sensor footprint.** The calibration analysis in
+  [docs/dashboard-plan.md](../docs/dashboard-plan.md#calibration) found that
+  the peak-detector diode drop drifts ~−2 mV/°C, worth roughly 0.37 kV of
+  apparent shift across a seasonal swing — about 7% of the 5 kV alert
+  threshold, with no physical change to the fence. Compensating for that in
+  the backend needs `temp_c` logged from the start, and the ESP32's internal
+  sensor is self-heated and too poor to use. A small I²C or one-wire sensor
+  (e.g. TMP102 or DS18B20) belongs on this board, and adding the footprint now
+  is free where adding it after fabrication is a respin. Decide before layout,
+  not after.
+- **Deep-sleep current is this board's headline specification.** The cadence
+  analysis in
+  [docs/dashboard-plan.md](../docs/dashboard-plan.md#reporting-cadence-and-alert-latency)
+  shows that a stock DevKit's 5–20 mA sleep draw exceeds the wake-cycle cost of
+  every candidate reporting cadence, capping runtime near 10 days regardless of
+  firmware. The socketed-DevKit decision above is the right risk trade for
+  revision 1, but it carries the DevKit's onboard LDO and USB-serial chip with
+  it — so either budget for cutting/bypassing those, or accept that the sleep
+  target (20–50 µA) needs a bare-module revision to reach. This is the single
+  measurement that decides whether the duty-cycle design means anything.

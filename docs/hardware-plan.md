@@ -67,7 +67,9 @@ Guiding principle: **retire the highest-risk unknowns first.** The peak detector
 
 - [ ] Assemble 18650 + TP4056 + solar panel + buck/boost chain on the bench
 - [ ] Measure actual ESP32 current draw in each state: deep sleep, wake + ADC read, Wi-Fi transmit (numbers vary a lot by board — measure, don't trust datasheets)
+- [ ] **Deep-sleep current is the gating measurement — take it first.** A stock dev board draws 5–20 mA asleep because of its LDO and USB-serial chip; at 10 mA that's 240 mAh/day doing nothing, which exceeds the wake-cycle cost of *every* candidate reporting cadence and pins runtime near 10 days no matter what the firmware does. The custom Logic & Power board should reach 20–50 µA. Until that gap is measured and closed, reporting-cadence tuning is meaningless
 - [ ] Compute the energy budget: reads-per-hour × (wake+read+transmit energy) + sleep floor, vs. worst-case winter solar harvest
+- [ ] **Evaluate the budget against the candidate cadences**, not just one assumed duty cycle — see the options table in [dashboard-plan.md](dashboard-plan.md#reporting-cadence-and-alert-latency). The estimates there (report cycle ~0.131 mAh, sample-only ~0.031 mAh, radio costing ~4× sampling) are the specific numbers this phase confirms or refutes. Note the binding constraint is **dark-day reserve**, not average solar harvest: a cadence with only ~3 days of reserve blinds the node in a winter overcast, and a blind node means unknown fence state
 - [ ] Decide single vs. parallel 18650 based on the measured budget and desired dark-day reserve (target: multi-week runtime with zero solar)
 - [ ] Verify TP4056 charging behavior from the actual panel (panel voltage sag under load, charge cutoff)
 - [ ] Brown-out behavior: confirm what the ESP32 does as the battery dies — it should fail silent, not spam garbage readings (coordinates with the software plan's battery telemetry)
@@ -83,11 +85,14 @@ Guiding principle: **retire the highest-risk unknowns first.** The peak detector
 - [ ] Move the tuned sensing chain from breadboard to protoboard/perfboard with proper HV spacing preserved
 - [ ] Integrate with the ESP32 running the Phase-2 firmware from the [software plan](software-plan.md) (raw ADC readings are enough at this stage)
 - [ ] Connect to the actual fence with the dedicated ground rod
-- [ ] **Calibrate against the handheld tester:** record ADC raw values against tester kV readings at multiple points (ideally by varying fence load — e.g., known leak to ground — to get readings across the 5–10 kV range, not just one operating point)
-- [ ] Derive the per-node calibration constant/curve; record it in `docs/calibration.md` keyed by node ID
+- [ ] **Calibrate against the handheld tester:** record ADC raw values against tester kV readings at multiple points (ideally by varying fence load — e.g., known leak to ground — to get readings across the 5–10 kV range, not just one operating point). **Multi-point is mandatory, not ideal:** the peak-detector diode drop is an *offset* term worth 15–25% at 7 kV, far larger than resistor tolerance, so a single point cannot separate gain from offset. Three to five points, and check the response is actually linear rather than assuming it
+- [ ] Derive the calibration constant/curve; record it in `docs/calibration.md` keyed on **`(node_id, location_id, date)`** — the *assignment*, since the constant depends on the board's ADC and on the divider chain it's wired to. Both a board swap and a relocation invalidate it: a moved board meets a different chain. Keep the raw measurement pairs, not just the derived constants, so the fit can be redone later
+- [ ] **Note the constants live in the backend, not on the node.** `adc_mv` is stored raw and kV is computed at query time from a versioned calibration record, so recalibration is a database update rather than a site visit — see [dashboard-plan.md](dashboard-plan.md#calibration). The node's local constant only needs to be good enough for its "transmit immediately" decision
+- [ ] **Log enclosure temperature alongside calibration points.** Diode Vf drifts ~−2 mV/°C, so a −10 °C to +40 °C seasonal swing is ~0.37 kV of apparent shift — about 7% of the 5 kV alert threshold with no physical change to the fence. A small external sensor in the enclosure (the ESP32's internal one is self-heated and poor) makes backend compensation possible later; without the data it cannot be reconstructed
+- [ ] Record the calibration conditions as a `fence_events` entry so the timeline shows when constants changed and why
 - [ ] Sanity-check repeatability: same conditions on different days should give the same kV
 
-**Exit criteria:** monitor's reported kV agrees with the handheld tester within an accepted tolerance (suggest ±5%) across the operating range; calibration procedure written down so it's repeatable for future nodes.
+**Exit criteria:** monitor's reported kV agrees with the handheld tester within an accepted tolerance (suggest ±5%) across the operating range; calibration procedure written down so it's repeatable for future nodes. Note ±5% is tight against the temperature drift above — expect to either widen it, compensate for `temp_c`, or state that the tolerance holds only near the calibration temperature.
 
 Once `Rbleed` and the rest of the sensing chain are stable coming out of this
 phase, the custom PCB in [hardware/pcb-design-plan.md](../hardware/pcb-design-plan.md)

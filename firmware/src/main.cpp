@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <esp_mac.h>
 #include <esp_sleep.h>
 
 #include <cstdio>
@@ -28,6 +29,22 @@ RTC_DATA_ATTR uint32_t failedPublishes = 0;
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
+
+// The node's own identifier: stable for the life of the board and assigned
+// without any per-node config step. Downstream (topic, payload, backend) this
+// is an opaque string — that it happens to come from the ESP32's MAC is an
+// implementation detail here, not something the contract may assume.
+//
+// esp_read_mac() is used rather than ESP.getEfuseMac(), which returns a
+// uint64_t with the bytes reversed relative to the printed MAC — formatting
+// that naively yields an id matching neither `esptool.py read_mac` nor the
+// router's DHCP table.
+static void formatNodeId(char *buffer, size_t size) {
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(buffer, size, "%02x%02x%02x%02x%02x%02x",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
 
 // Continuously sample the peak detector output and keep the max.
 // analogReadMilliVolts applies the factory ADC calibration, which matters:
@@ -67,15 +84,15 @@ static bool connectWifi() {
   return true;
 }
 
-static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
-                         int32_t rssi, uint32_t wifiMs) {
+static bool publishState(const char *nodeId, uint32_t fenceMv, float fenceKv,
+                         float battV, int32_t rssi, uint32_t wifiMs) {
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
 
   bool connected;
   if (strlen(MQTT_USER) > 0) {
-    connected = mqtt.connect(NODE_ID, MQTT_USER, MQTT_PASSWORD);
+    connected = mqtt.connect(nodeId, MQTT_USER, MQTT_PASSWORD);
   } else {
-    connected = mqtt.connect(NODE_ID);
+    connected = mqtt.connect(nodeId);
   }
   if (!connected) {
     Serial.printf("MQTT connect failed, state=%d\n", mqtt.state());
@@ -83,7 +100,7 @@ static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
   }
 
   JsonDocument doc;
-  doc["node"] = NODE_ID;
+  doc["node_id"] = nodeId;
   doc["fw"] = FW_VERSION;
   doc["kv"] = roundf(fenceKv * 100.0f) / 100.0f;
   doc["adc_mv"] = fenceMv;
@@ -94,7 +111,7 @@ static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
   doc["wifi_ms"] = wifiMs;
 
   char topic[64];
-  snprintf(topic, sizeof(topic), "fence/%s/state", NODE_ID);
+  snprintf(topic, sizeof(topic), "fence/%s/state", nodeId);
   char payload[MQTT_MAX_PACKET_SIZE];
   const size_t len = serializeJson(doc, payload, sizeof(payload));
 
@@ -122,7 +139,9 @@ static void goToSleep() {
 void setup() {
   ++bootCount;
   Serial.begin(115200);
-  Serial.printf("\n%s fw %s boot %u\n", NODE_ID, FW_VERSION, bootCount);
+  char nodeId[13];
+  formatNodeId(nodeId, sizeof(nodeId));
+  Serial.printf("\n%s fw %s boot %u\n", nodeId, FW_VERSION, bootCount);
 
   analogSetPinAttenuation(PIN_FENCE_ADC, ADC_11db);  // full 0-3.3 V range
   analogSetPinAttenuation(PIN_BATT_ADC, ADC_11db);
@@ -142,7 +161,7 @@ void setup() {
     const int32_t rssi = WiFi.RSSI();
     Serial.printf("wifi up in %u ms, rssi %d dBm\n", wifiMs,
                   static_cast<int>(rssi));
-    published = publishState(fenceMv, fenceKv, battV, rssi, wifiMs);
+    published = publishState(nodeId, fenceMv, fenceKv, battV, rssi, wifiMs);
   } else {
     Serial.println("wifi connect timed out");
   }
