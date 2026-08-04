@@ -3,3 +3,13 @@ firmware/.pio/
 
 # Per-node secrets and calibration — copy from config.example.h
 firmware/src/config.h
+
+# Dashboard: Python/Node build artifacts
+dashboard/backend/.venv/
+dashboard/backend/**/__pycache__/
+dashboard/backend/*.egg-info/
+dashboard/backend/.pytest_cache/
+dashboard/backend/.ruff_cache/
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
+dashboard/frontend/tsconfig.tsbuildinfo
