@@ -175,6 +175,8 @@ README.md                 Project overview (this file)
 docs/
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)
+hardware/                 Schematics, BOM with sourced part numbers
+firmware/                 PlatformIO project (src/, platformio.ini)
 ```
 
-Planned as the project progresses: `firmware/` (PlatformIO project), `hardware/` (schematics, BOM with sourced part numbers), and `docs/calibration.md` (per-node calibration records).
+Still to come as the project progresses: a full BOM, `platformio.ini`, and `docs/calibration.md` (per-node calibration records).
