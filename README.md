@@ -139,7 +139,7 @@ Full plan, including the firmware toolchain and backend decisions, in [docs/soft
 - Firmware ADC strategy: multi-sample over a 2–3 s window and take the max (see peak detector section above).
 - Voltage conversion: a firmware/backend calibration constant maps raw ADC readings to actual kV, calibrated against a known handheld fence tester rather than trusting divider math alone — resistor tolerance stacking across 10 series resistors introduces cumulative error.
 
-**Backend: decided.** Custom stack — Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript, not Home Assistant. Being built now, ahead of hardware, against mock MQTT data using the firmware's real payload contract. Full rationale and architecture in [docs/dashboard-plan.md](docs/dashboard-plan.md).
+**Backend: decided.** Custom stack — Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript, not Home Assistant. Being built now, ahead of hardware, against mock MQTT data using the firmware's real payload contract. Chosen for control over the end state and transferable skills, accepting more operational surface and having to build the push alerting Home Assistant gives away. Full rationale and architecture in [docs/dashboard-plan.md](docs/dashboard-plan.md).
 
 **Open — resolved as milestones in the software plan:**
 
@@ -187,6 +187,8 @@ This project involves measuring circuits carrying up to 10,000 V pulses. Even th
 
 ```
 README.md                 Project overview (this file)
+contract/                 Authoritative MQTT payload schema — shared contract
+                          between firmware and backend, validated in CI
 docs/
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)

@@ -44,7 +44,7 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
 
 **Decision: custom stack — Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript** (not Home Assistant, not the Grafana/InfluxDB trio). Full rationale and architecture in [docs/dashboard-plan.md](dashboard-plan.md), decided ahead of hardware so the dashboard could be built now against mock MQTT data using the firmware's real payload contract. Summary of why:
 
-- HA's automation/card model would constrain later custom views (e.g. the Phase 7 fault-localization overlay); also heavier to run just for dev.
+- HA's automation/card model would constrain later custom views (e.g. the Phase 7 fault-localization overlay). This is a trade, not a free win: the custom stack is six containers to HA's one and has to build the push alerting HA gives away. Chosen for control and transferable skills, accepting more operational surface — not because it's lighter.
 - Grafana + InfluxDB (the originally planned custom fallback) was reconsidered in favor of a hand-rolled API + Postgres + React app — deliberately chosen for more generally transferable software engineering skills over self-hosted-ops-specific tooling.
 - MQTT/Mosquitto stays the transport either way — it's already the firmware's committed contract.
 - Deployment target (Raspberry Pi vs. cloud) is intentionally left open; Docker Compose keeps the stack portable to either.
@@ -120,8 +120,10 @@ Underway ahead of hardware, against mock MQTT data — see
 - [ ] Stand up Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript via Docker Compose (dashboard-plan Phases D0–D1)
 - [ ] Mock publisher exercises every node scenario (normal, low-voltage, fence-down, silent, battery-drain) so the dashboard is fully testable before real hardware exists (Phase D2)
 - [ ] Ingest `fence/<node-id>/state`; dashboard showing per-node: current kV, voltage-over-time chart, battery, RSSI, last-seen, derived status (Phases D3–D5)
-- [ ] Historical retention target: at least a season of readings, so vegetation-growth trends are visible
-- [ ] Cut over from mock publisher to real firmware once hardware Phase 4/6 and firmware Phase 2 land (Phase D6) — deploy target (Pi vs. cloud) decided at that point, see dashboard-plan.md
+- [ ] Historical retention target: at least a season of readings, so vegetation-growth trends are visible — implemented as Timescale continuous aggregates + retention/compression policies (Phase D1)
+- [ ] Per-node MQTT credentials + broker ACLs before any node is flashed for deployment — a spoofable "fence is fine" is the worst failure mode this system has, and retrofitting it means reflashing every deployed node (dashboard-plan Security section)
+- [ ] Minimal push alerting + external dead-man's switch (Phase D5.5) — pulled ahead of Phase 6 because it's the primary requirement, not a nicety
+- [ ] Cut over from mock publisher to real firmware once hardware Phase 4/6 and firmware Phase 2 land (Phase D6) — deploy target (Pi vs. cloud) decided at that point, see dashboard-plan.md. Note the cutover is a re-tuning exercise, not a config change: real cadence is ~60× slower than mock, so every time-based threshold and chart range is re-validated there
 
 ### Phase 6 — Alert Logic
 
@@ -131,8 +133,9 @@ Built on the established operating range (typical ~7 kV, minimum acceptable ~5 k
 - [ ] **Fence-down alert:** kV below a floor (e.g., <1 kV) or reading pinned at zero — distinct, higher-urgency alert
 - [ ] **Node-silent alert:** no report for > 2–3× the sleep interval. Distinguish causes where possible: last known battery voltage low → probably node power; battery was healthy → probably Wi-Fi or node failure. Either way the fence state is *unknown*, which is itself alert-worthy
 - [ ] **Trend/warning tier (secondary goal):** slow decline over days (vegetation load growing) as a low-urgency notification before it ever crosses the hard threshold
-- [ ] Push delivery: HA companion app notifications if Milestone B → Home Assistant; otherwise ntfy/Pushover/Telegram from the custom stack
+- [ ] Push delivery: ntfy/Pushover from the custom stack. **A minimal single-channel version of this ships in dashboard-plan Phase D5.5**, ahead of this phase — the custom-stack decision means push alerting is the one thing that doesn't arrive for free, and deferring all of it here risks ending up with a good dashboard that never pages anyone. What remains for Phase 6 is the richer behavior below
 - [ ] Alert acknowledgment/quiet hours as needed once real alerts start flowing
+- [ ] **Dead-man's switch** (also D5.5): a dead broker, dead ingest, or dead host is indistinguishable from a quiet healthy fence — nothing inside the stack can detect its own total failure, so an external service must alert when the stack stops checking in. Hard prerequisite before the alert drills below are meaningful
 
 ### Phase 7 — Multi-Node & Fault Localization (after node 1 proves out)
 
@@ -153,7 +156,8 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 
 ## Testing Strategy
 
-- **Static analysis:** `firmware/lint.sh` (cppcheck + cpplint) runs without the ESP32 toolchain and should stay clean on every change; clang-tidy / `pio check` are available on toolchain-equipped machines for deeper passes.
+- **Static analysis:** `firmware/lint.sh` (cppcheck + cpplint) runs without the ESP32 toolchain and should stay clean on every change; clang-tidy / `pio check` are available on toolchain-equipped machines for deeper passes. Wired into CI in dashboard-plan Phase D0 — it currently runs only by hand.
+- **Contract test:** the MQTT payload schema is shared between firmware and backend and currently exists as hand-copied JSON in several files. `contract/fence-state.schema.json` becomes the single source of truth, validated on both sides in CI (dashboard-plan Testing section).
 - **Bench rig:** a second ESP32 (or signal generator) producing fake "peak detector" voltages lets firmware development proceed without HV on the desk.
 - **Soak tests:** every firmware phase ends with a ≥24 h unattended bench run before moving on.
 - **Alert drills:** before trusting the system, deliberately induce each alert condition (drop the divider input, kill the node's power, kill its Wi-Fi) and confirm the right alert fires with the right urgency.
@@ -162,6 +166,7 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 ## Repo Structure (as software work begins)
 
 ```
+contract/            Authoritative MQTT payload schema shared by firmware and backend
 firmware/            PlatformIO project (src/, platformio.ini)
   src/config.example.h  Tracked template — copy to config.h per node
   src/config.h       Real per-node config with credentials (gitignored)
