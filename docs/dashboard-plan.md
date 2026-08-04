@@ -37,6 +37,18 @@ Rationale:
 - MQTT/Mosquitto is not really a choice — it's already the firmware's
   committed transport (`fence/<node-id>/state`, retained messages).
 
+**Whole-property Home Assistant hub: deferred, not rejected.** The house/farm
+already run a mix of Google-ecosystem devices, smart bulbs/outlets, a Sense
+energy monitor, a Droplet water monitor, Blink cameras, and a Roomba —
+enough that a property-wide HA hub is a real, independently valuable project,
+just a bigger scope than "monitor the fence." Rather than merge that decision
+into this one, the two are kept compatible: Mosquitto is already the shared
+transport, so a future HA instance can subscribe to `fence/+/state` on the
+same broker and surface fence status alongside everything else, with zero
+change to this dashboard, the ingest service, or the firmware. This app
+doesn't need to wait on that decision, and that decision doesn't need to
+route through this app.
+
 **Deployment target (Raspberry Pi vs. cloud) is explicitly deferred.**
 Docker Compose makes every component portable — the same images run
 unchanged on a Pi, a cloud VM, or a NAS. Decide this once there's an
