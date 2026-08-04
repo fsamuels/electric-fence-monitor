@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  firmware-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck and cpplint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+          pip install cpplint
+      - run: ./firmware/lint.sh
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r contract/requirements.txt
+      - run: python contract/validate_examples.py
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check app
+      - run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: dashboard/frontend/package.json
+      - run: npm install
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+
+  api-schema-drift:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: dashboard/frontend/package.json
+      - name: Install backend
+        working-directory: dashboard/backend
+        run: pip install -e .
+      - name: Dump OpenAPI schema
+        working-directory: dashboard/backend
+        run: |
+          python -c "
+          from app.main import app
+          import json
+          print(json.dumps(app.openapi()))
+          " > /tmp/openapi.json
+      - name: Install frontend deps
+        working-directory: dashboard/frontend
+        run: npm install
+      - name: Regenerate TS client
+        working-directory: dashboard/frontend
+        run: npx openapi-typescript /tmp/openapi.json -o src/api/schema.ts
+      - name: Fail if generated client is stale
+        run: git diff --exit-code -- dashboard/frontend/src/api/schema.ts
