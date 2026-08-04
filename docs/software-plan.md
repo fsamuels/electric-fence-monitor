@@ -150,7 +150,9 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 ## Repo Structure (as software work begins)
 
 ```
-firmware/            PlatformIO project (src/, platformio.ini, per-node config)
+firmware/            PlatformIO project (src/, platformio.ini)
+  src/config.example.h  Tracked template — copy to config.h per node
+  src/config.h       Real per-node config with credentials (gitignored)
 backend/             HA config snippets or custom-stack compose files, per Milestone B
 docs/
   software-plan.md   This file

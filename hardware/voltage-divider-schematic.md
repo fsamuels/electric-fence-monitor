@@ -4,7 +4,7 @@ Schematic for the fence-voltage sensing chain: the high-voltage resistive divide
 the peak detector, and the two Zener clamps that feed the ESP32 ADC. This is the
 canonical wiring reference for the Phase 1 breadboard build (see
 [hardware-plan.md](../docs/hardware-plan.md)) and the divider math behind the
-firmware calibration constant (see [firmware/src/config.h](../firmware/src/config.h)).
+firmware calibration constant (see [firmware/src/config.example.h](../firmware/src/config.example.h)).
 
 > **Safety:** Every node from the fence tap down to the Rsense node is live HV
 > wiring — up to 10 kV pulses. Both Zener clamps are mandatory. The sensing ground
