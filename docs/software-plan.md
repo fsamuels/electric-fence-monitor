@@ -81,14 +81,14 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
   - Note this makes the `ts` payload field effectively mandatory: once sampling and reporting decouple, a heartbeat carries readings taken minutes earlier and receipt time is wrong for all of them
   - **Measure deep-sleep current before tuning any of this.** A stock ESP32 dev board draws 5–20 mA asleep, which exceeds the wake-cost of every cadence option and caps runtime near 10 days regardless. Cadence is only a real decision once the custom Logic & Power board brings that to tens of µA
 - [ ] Wi-Fi connect with a bounded timeout — a node in a weak-signal spot must not burn its battery retrying; on failure, log locally (RTC memory counter) and go back to sleep
-- [ ] Telemetry payload: `chip_id` (eFuse MAC), firmware version, raw ADC max, computed kV, battery voltage, Wi-Fi RSSI, boot/wake counter
+- [ ] Telemetry payload: `node_id` (eFuse MAC), firmware version, raw ADC max, computed kV, battery voltage, Wi-Fi RSSI, boot/wake counter
   - Battery voltage and RSSI are not optional extras: RSSI feeds the antenna-vs-LoRa decision, battery feeds the "dead node vs. dead fence" distinction
-- [ ] Per-device config (Wi-Fi credentials, coarse local calibration constant, sample/report intervals) separated from code — build flags or NVS. **Device identity is deliberately *not* in this list:** it comes from the ESP32 MAC-derived `chip_id`, so onboarding devices 2–5 needs no per-device identity config at all
-- [ ] **Identity comes from the hardware, the name comes from the backend.** The node derives `chip_id` from the ESP32 MAC at runtime, publishes to `fence/<chip_id>/state`, and uses `chip_id` for its MQTT client id. Which *fence* a board is watching is a versioned assignment held in the database, so relocating hardware is a dashboard action with no reflash — full rationale in [dashboard-plan.md](dashboard-plan.md#identity-devices-locations-and-assignments)
+- [ ] Per-node config (Wi-Fi credentials, coarse local calibration constant, sample/report intervals) separated from code — build flags or NVS. **Node identity is deliberately *not* in this list:** it comes from the ESP32 MAC-derived `node_id`, so onboarding nodes 2–5 needs no per-node identity config at all
+- [ ] **Identity comes from the hardware, the name comes from the backend.** The node derives `node_id` from the ESP32 MAC at runtime, publishes to `fence/<node_id>/state`, and uses `node_id` for its MQTT client id. Which *fence* a board is watching is a versioned assignment held in the database, so relocating hardware is a dashboard action with no reflash — full rationale in [dashboard-plan.md](dashboard-plan.md#identity-nodes-locations-and-assignments)
   - The classic ESP32 has no 128-bit unique id (that's S2/S3/C3), so the factory 48-bit base MAC *is* the hardware identity. It's readable before Wi-Fi comes up, so a wake that never associates still knows who it is. Store all 48 bits — Espressif OUI prefixes repeat within a batch, so truncation discards the bytes that carry the entropy
   - **Watch the byte order.** `ESP.getEfuseMac()` returns a `uint64_t` byte-reversed relative to what `WiFi.macAddress()` prints; formatted naively it won't match `esptool.py read_mac` or the router's DHCP table. Pin the format in `contract/fence-state.schema.json` and verify on first hardware
-  - Print `chip_id` on the serial console at boot — it's the provisioning key and eventual ACL subject
-- [ ] Publish via MQTT: `fence/<chip_id>/state` as a JSON document, with MQTT retain so the dashboard shows the last reading immediately
+  - Print `node_id` on the serial console at boot — it's the provisioning key and eventual ACL subject
+- [ ] Publish via MQTT: `fence/<node_id>/state` as a JSON document, with MQTT retain so the dashboard shows the last reading immediately
 
 **Exit criteria:** bench unit runs the full cycle unattended for 24 h; measured awake-time matches the hardware energy budget assumptions.
 
@@ -96,13 +96,13 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
 
 **Goal:** readings in real kV, per node.
 
-**Calibration is applied in the backend, not on the node.** `adc_mv` is stored raw on every reading, so kV is computed at query time from a versioned per-node calibration record — which means recalibration is a database update that fixes all history retroactively, with no site visit and no reflash. The on-device constant survives only so the node can decide locally whether a reading is bad enough to warrant an immediate out-of-band transmit; it can be coarse. Full rationale and error budget in [dashboard-plan.md](dashboard-plan.md#calibration).
+**Calibration is applied in the backend, not on the node.** `adc_mv` is stored raw on every reading, so kV is computed at query time from a versioned per-node calibration record — which means recalibration is a database update that fixes all history retroactively, with no site visit and no reflash. The on-node constant survives only so the node can decide locally whether a reading is bad enough to warrant an immediate out-of-band transmit; it can be coarse. Full rationale and error budget in [dashboard-plan.md](dashboard-plan.md#calibration).
 
 - [ ] Calibration mode (e.g., held pin at boot, or MQTT command): rapid readings streamed while someone at the fence compares against the handheld tester
 - [ ] **Multi-point fit, not single-point.** `kv = adc_mv × gain + offset` has two unknowns, and the peak-detector diode drop (0.3–0.5 V, i.e. 15–25% at 7 kV) makes the offset term dominant — far larger than resistor tolerance. Collect 3–5 points across 5–10 kV to solve both and to confirm the response is linear rather than assume it. Sources of distinct levels, in preference order: charger power settings, natural voltage variation measured at several points along the line, or bench characterization done first in hardware Phase 1–2
-- [ ] Store the on-device constant in **NVS, updatable over MQTT** — not a compile-time `#define`. A constant that requires a reflash to change contradicts Phase 4's premise of a node you never walk to
+- [ ] Store the on-node constant in **NVS, updatable over MQTT** — not a compile-time `#define`. A constant that requires a reflash to change contradicts Phase 4's premise of a node you never walk to
 - [ ] **Log enclosure temperature (`temp_c` in the payload).** Diode Vf drifts about −2 mV/°C, so a −10 °C to +40 °C seasonal swing is ~0.37 kV of apparent shift — roughly 7% of the 5 kV alert threshold, with no physical change to the fence. Backend-side compensation is cheap once the data exists and impossible to reconstruct retroactively, so log it from the start even if compensation comes later
-- [ ] Document each calibration in `docs/calibration.md` keyed on **`(chip_id, location_id, date)`** — i.e. on the *assignment*, since the constant depends on both the board's ADC and the divider chain it's wired to. A board swap **and** a relocation each invalidate it: a moved board is paired with a different chain. Record the raw points as well as the derived constants, and treat readings as provisional until re-verified
+- [ ] Document each calibration in `docs/calibration.md` keyed on **`(node_id, location_id, date)`** — i.e. on the *assignment*, since the constant depends on both the board's ADC and the divider chain it's wired to. A board swap **and** a relocation each invalidate it: a moved board is paired with a different chain. Record the raw points as well as the derived constants, and treat readings as provisional until re-verified
 
 **Exit criteria:** hardware Phase-4 exit criteria met (agreement with handheld tester within tolerance across 5–10 kV).
 
@@ -129,12 +129,12 @@ Underway ahead of hardware, against mock MQTT data — see
 
 - [ ] Stand up Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript via Docker Compose (dashboard-plan Phases D0–D1)
 - [ ] Mock publisher exercises every node scenario (normal, low-voltage, fence-down, silent, battery-drain, board-swap, uncalibrated) plus report-by-exception arrival, so the dashboard is fully testable before real hardware exists (Phase D2)
-- [ ] Ingest `fence/<chip_id>/state`; dashboard showing per-location: current kV, voltage-over-time chart, battery, RSSI, last-seen, link quality, derived status (Phases D3–D5)
+- [ ] Ingest `fence/<node_id>/state`; dashboard showing per-location: current kV, voltage-over-time chart, battery, RSSI, last-seen, link quality, derived status (Phases D3–D5)
 - [ ] **Calibration applied at query time from a versioned `calibrations` table** (Phases D1/D3) — since `adc_mv` is stored raw, recalibration is a database update that repairs all history retroactively, with no site visit and no reflash. This is what removes calibration from the list of reasons to walk the fence line
 - [ ] **`fence_events` timeline** (Phases D1/D4/D5): operator-annotated record of deliberate physical changes — wire added, charger serviced, vegetation cleared, board swapped, recalibrated — rendered as chart annotations. Without it the trend tier cannot distinguish an intentional change from a developing fault, and every fence extension reads as an anomaly for the rest of the node's life
-- [ ] **Device/location/assignment model** (Phase D1): readings key on `chip_id`; which fence that was, and what constants apply, both resolve at query time from versioned assignment and calibration windows. Relocating hardware is a database write, not a reflash — and an unrecognized board arrives in an unassigned inbox rather than inventing a location
+- [ ] **Node/location/assignment model** (Phase D1): readings key on `node_id`; which fence that was, and what constants apply, both resolve at query time from versioned assignment and calibration windows. Relocating hardware is a database write, not a reflash — and an unrecognized board arrives in an unassigned inbox rather than inventing a location
 - [ ] Historical retention target: at least a season of readings, so vegetation-growth trends are visible — implemented as Timescale continuous aggregates + retention/compression policies (Phase D1)
-- [ ] Security hardening is documented but deferred: per-device MQTT credentials, broker ACLs, and remote-access auth are later work, not implementation blockers while the stack runs on a trusted LAN (dashboard-plan Security section)
+- [ ] Security hardening is documented but deferred: per-node MQTT credentials, broker ACLs, and remote-access auth are later work, not implementation blockers while the stack runs on a trusted LAN (dashboard-plan Security section)
 - [ ] Minimal push alerting + external dead-man's switch (Phase D5.5) — pulled ahead of Phase 6 because it's the primary requirement, not a nicety
 - [ ] Cut over from mock publisher to real firmware once hardware Phase 4/6 and firmware Phase 2 land (Phase D6) — deploy target (Pi vs. cloud) decided at that point, see dashboard-plan.md. Note the cutover is a re-tuning exercise, not a config change: real cadence is ~60× slower than mock, so every time-based threshold and chart range is re-validated there
 
@@ -164,7 +164,7 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 
 1. **Measure first:** RSSI at actual deployment points, logged by the node itself (it's in the telemetry payload).
 2. **External antenna:** u.FL ESP32 variant + directional or higher-gain antenna through a cable gland.
-3. **Mesh extension:** an additional mesh node/repeater closer to the fence point may be cheaper than redesigning the device.
+3. **Mesh extension:** an additional mesh node/repeater closer to the fence point may be cheaper than redesigning the node.
 4. **LoRa fallback:** ESP32+LoRa module per node plus a LoRa gateway on the ranch network. Note this changes the firmware transport layer and adds a gateway — a real scope expansion, hence last resort. The MQTT message contract survives unchanged (gateway bridges LoRa → MQTT).
 
 ## Testing Strategy
@@ -182,7 +182,7 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 contract/            Authoritative MQTT payload schema shared by firmware and backend
 firmware/            PlatformIO project (src/, platformio.ini)
   src/config.example.h  Tracked template — copy to config.h per node
-  src/config.h       Real per-device config with credentials (gitignored)
+  src/config.h       Real per-node config with credentials (gitignored)
 dashboard/           Mosquitto + FastAPI + Postgres/TimescaleDB + React/TS, per Milestone B decision — see dashboard-plan.md
 docs/
   software-plan.md   This file
