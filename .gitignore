@@ -1,5 +1,5 @@
-# PlatformIO
+# PlatformIO build output
 firmware/.pio/
 
-# Per-node firmware config (copy from config.example.h)
+# Per-node secrets and calibration — copy from config.example.h
 firmware/src/config.h

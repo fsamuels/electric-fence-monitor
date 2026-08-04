@@ -35,6 +35,8 @@ Start with **one prototype unit**, but design for a small number of additional n
 ## Hardware
 
 Full design rationale and build sequence in [docs/hardware-plan.md](docs/hardware-plan.md).
+Custom PCB plan, schematics, and BOM in [hardware/](hardware/) — start with
+[hardware/pcb-design-plan.md](hardware/pcb-design-plan.md).
 
 ### Compute Platform: ESP32
 
@@ -112,6 +114,17 @@ Divider output → [Diode] → [Capacitor to GND] → ESP32 ADC pin
 
 Roughly 1/3 to 1/2 the per-unit cost of the closest commercial match (AKO Smart Satellite); the cost advantage improves further at multi-unit scale (bulk component buys, reused design and firmware).
 
+#### Power System Cost Comparison: Solar vs. Battery-Only
+
+Solar is the current design decision (see above), not a toggleable option — but for reference, here's what dropping it would save vs. what it costs operationally.
+
+| Configuration | Power components | Est. cost | Runtime |
+|---|---|---|---|
+| **Battery + solar (current design)** | 18650 cell(s) + TP4056 + 5–6 W solar panel + buck/boost | $18–32 | Multi-week to indefinite — solar top-up covers the duty cycle; battery reserve covers dark-day/winter stretches (Phase 3 target) |
+| **Battery-only (no solar)** | 18650 cell(s) + buck/boost (TP4056 optional, only needed if recharging in place rather than swapping cells) | $8–13 | Bounded by battery capacity alone — unit must be manually swapped or recharged on some cycle |
+
+Dropping solar saves roughly **$10–19/unit**, but shifts the cost from parts to labor: someone has to hike out and service each node on whatever interval the battery actually lasts. That interval isn't known yet — it falls out of the Phase 3 energy budget measurement (reads-per-hour × wake/read/transmit energy + sleep floor), which hasn't been done because no hardware has been built. Until that number exists, battery-only shouldn't be assumed viable for the project's stated goal of unattended multi-week-to-indefinite operation, especially once scaled to 2–5 nodes where servicing cost multiplies per site.
+
 ---
 
 ## Software & Connectivity
@@ -175,8 +188,12 @@ README.md                 Project overview (this file)
 docs/
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)
-hardware/                 Schematics, BOM with sourced part numbers
-firmware/                 PlatformIO project (src/, platformio.ini)
+firmware/                 ESP32 node firmware (PlatformIO/Arduino) — see firmware/README.md
+hardware/
+  pcb-design-plan.md            Custom PCB scope, sequencing, tool choice, JLCPCB fab walkthrough
+  voltage-divider-schematic.md  HV sensing chain (divider + peak detector) — stays hand-wired, off-board
+  logic-power-board-schematic.md  Logic & Power board — the actual PCB target, with BOM
+  images/                       Rendered schematic images + the script that generates them
 ```
 
-Still to come as the project progresses: a full BOM, `platformio.ini`, and `docs/calibration.md` (per-node calibration records).
+Planned as the project progresses: `docs/calibration.md` (per-node calibration records).

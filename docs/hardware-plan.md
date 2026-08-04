@@ -20,6 +20,14 @@ Guiding principle: **retire the highest-risk unknowns first.** The peak detector
 
 **Exit criteria:** all parts on hand; a bench test plan for HV exists that doesn't involve improvising around a live fence.
 
+**Off-the-shelf divider/probe options considered and ruled out:** researched before committing to the DIY resistor-string divider build in Phase 1.
+
+- **Scope-style HV divider probes** (Fluke 80K-15, CalTest CT4432, Keysight N2771B) — real 1000:1 dividers rated for fast HV pulses at 10–15 kV, so electrically the closest match. Ruled out for per-node use: they terminate into a 1 MΩ oscilloscope input via BNC, not a high-impedance MCU ADC, so a peak-detector stage would still be needed downstream. At ~$400+ each they're roughly 40–80x the cost of the resistor-string divider. Worth buying **one**, not per-node, as a Phase 4 calibration reference alongside the handheld fence tester.
+- **AC voltage sensor modules** (e.g. ZMPT101B) — cheap, common MCU accessory, but rated for continuous 250 V–1 kV sinusoidal mains via transformer coupling. Doesn't fit a 10 kV fast-rise pulse source; ruled out.
+- **Pre-made "fence voltage divider" boards** — no such product category exists. Forum builds (e.g. the [Arduino Forum electric fence voltmeter thread](https://forum.arduino.cc/t/electric-fence-voltmeter/212689)) converge on the same series-resistor-string approach used here, because no single resistor is rated to block 10 kV alone. Commercial fence monitors (AKO, JVA, Tru-Test) sell only as sealed complete units, not a sourceable sensing module.
+
+**Conclusion:** no off-the-shelf part beats the DIY divider on cost or fit for a battery-powered, ADC-fed, pulsed-HV design — proceed with the resistor-string build in Phase 1.
+
 ---
 
 ## Phase 1 — Breadboard the Sensing Chain (highest risk first)
@@ -81,6 +89,11 @@ Guiding principle: **retire the highest-risk unknowns first.** The peak detector
 
 **Exit criteria:** monitor's reported kV agrees with the handheld tester within an accepted tolerance (suggest ±5%) across the operating range; calibration procedure written down so it's repeatable for future nodes.
 
+Once `Rbleed` and the rest of the sensing chain are stable coming out of this
+phase, the custom PCB in [hardware/pcb-design-plan.md](../hardware/pcb-design-plan.md)
+becomes worth designing — see that doc for why it waits until now rather than
+starting earlier.
+
 ---
 
 ## Phase 5 — Enclosure & Weatherproofing
@@ -107,7 +120,7 @@ Guiding principle: **retire the highest-risk unknowns first.** The peak detector
 - [ ] Design and install horse-proof mounting: out of reach or armored; no dangling leads a horse can catch; fence lead and ground lead protected (conduit or routing along the post)
 - [ ] Drive the dedicated ground rod at the deployment site
 - [ ] Observe for a multi-week shakedown period: reading stability, battery/solar behavior through weather, enclosure condition
-- [ ] Revisit and finalize the BOM with actual sourced part numbers (`hardware/BOM.md`)
+- [ ] Revisit and finalize the BOM with actual sourced part numbers (see [hardware/logic-power-board-schematic.md](../hardware/logic-power-board-schematic.md#bom))
 
 **Exit criteria:** ≥2 weeks unattended operation with continuous reporting, stable calibration, healthy battery, and no physical damage.
 
