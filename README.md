@@ -6,6 +6,7 @@ Remote, battery/solar-powered electric fence voltage monitor for Reign Cloud Ran
 
 - [Hardware development plan](docs/hardware-plan.md)
 - [Software development plan](docs/software-plan.md)
+- [Dashboard development plan](docs/dashboard-plan.md) — being built ahead of hardware, against mock data
 
 ---
 
@@ -138,10 +139,11 @@ Full plan, including the firmware toolchain and backend decisions, in [docs/soft
 - Firmware ADC strategy: multi-sample over a 2–3 s window and take the max (see peak detector section above).
 - Voltage conversion: a firmware/backend calibration constant maps raw ADC readings to actual kV, calibrated against a known handheld fence tester rather than trusting divider math alone — resistor tolerance stacking across 10 series resistors introduces cumulative error.
 
+**Backend: decided.** Custom stack — Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript, not Home Assistant. Being built now, ahead of hardware, against mock MQTT data using the firmware's real payload contract. Full rationale and architecture in [docs/dashboard-plan.md](docs/dashboard-plan.md).
+
 **Open — resolved as milestones in the software plan:**
 
 - **Firmware toolchain:** Arduino framework via PlatformIO is the working recommendation; ESP-IDF, ESPHome, and MicroPython are documented as alternatives with a final decision to be made when development begins.
-- **Backend:** Home Assistant (built-in threshold alerting, free dashboard, no custom backend) vs. custom MQTT/HTTP endpoint + self-built dashboard — planned as an explicit evaluation milestone.
 - **Alert logic:** specific low-voltage and no-signal (dead node vs. dead fence) alert rules, built on the 5 kV / 7 kV / 10 kV operating range.
 - **Weak-signal fallback:** external-antenna ESP32 variant tested first; LoRa (ESP32 + LoRa module + gateway) as fallback if Wi-Fi proves insufficient.
 
@@ -188,7 +190,9 @@ README.md                 Project overview (this file)
 docs/
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)
+  dashboard-plan.md       Dashboard architecture + phased plan (mock data, ahead of hardware)
 firmware/                 ESP32 node firmware (PlatformIO/Arduino) — see firmware/README.md
+dashboard/                 Web dashboard: Mosquitto + FastAPI + Postgres/TimescaleDB + React/TS — see docs/dashboard-plan.md
 hardware/
   pcb-design-plan.md            Custom PCB scope, sequencing, tool choice, JLCPCB fab walkthrough
   voltage-divider-schematic.md  HV sensing chain (divider + peak detector) — stays hand-wired, off-board

@@ -42,12 +42,18 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
 | Maintenance | HA upgrades occasionally break things | You own every piece |
 | Prerequisite | An always-on box on the ranch network running HA | An always-on box running the broker + stack (same box requirement) |
 
-**Evaluation plan:**
+**Decision: custom stack — Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript** (not Home Assistant, not the Grafana/InfluxDB trio). Full rationale and architecture in [docs/dashboard-plan.md](dashboard-plan.md), decided ahead of hardware so the dashboard could be built now against mock MQTT data using the firmware's real payload contract. Summary of why:
 
-- [ ] Confirm whether Home Assistant is already running (or acceptable to run) on the ranch network — this is the dominant factor
-- [ ] Stand up a throwaway HA + Mosquitto instance; point a bench ESP32 publishing fake voltage at it; build one threshold alert + one dashboard card; time how long it takes
-- [ ] Only if HA proves inadequate or unacceptable: spec the custom stack (Mosquitto + InfluxDB + Grafana is the conventional trio)
-- [ ] Record the decision and rationale in this file
+- HA's automation/card model would constrain later custom views (e.g. the Phase 7 fault-localization overlay); also heavier to run just for dev.
+- Grafana + InfluxDB (the originally planned custom fallback) was reconsidered in favor of a hand-rolled API + Postgres + React app — deliberately chosen for more generally transferable software engineering skills over self-hosted-ops-specific tooling.
+- MQTT/Mosquitto stays the transport either way — it's already the firmware's committed contract.
+- Deployment target (Raspberry Pi vs. cloud) is intentionally left open; Docker Compose keeps the stack portable to either.
+
+~~Original evaluation plan (superseded by the above):~~
+
+- ~~Confirm whether Home Assistant is already running (or acceptable to run) on the ranch network~~
+- ~~Stand up a throwaway HA + Mosquitto instance; time how long a threshold alert + dashboard card takes~~
+- ~~Only if HA proves inadequate: spec the custom stack~~
 
 **Note:** either way, the firmware speaks **MQTT** (see message contract below). Home Assistant consumes MQTT natively via discovery, and any custom stack starts from a broker — so firmware work can begin before Milestone B is settled.
 
@@ -107,9 +113,15 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
 
 ### Phase 5 — Backend Bring-Up
 
-- [ ] Execute Milestone B evaluation; stand up the chosen stack on an always-on box on the ranch network
-- [ ] Ingest `fence/<node-id>/state`; dashboard showing per-node: current kV, sparkline/history, battery, RSSI, last-seen
+Underway ahead of hardware, against mock MQTT data — see
+[docs/dashboard-plan.md](dashboard-plan.md) for the detailed phased plan
+(D0–D6). Summary:
+
+- [ ] Stand up Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript via Docker Compose (dashboard-plan Phases D0–D1)
+- [ ] Mock publisher exercises every node scenario (normal, low-voltage, fence-down, silent, battery-drain) so the dashboard is fully testable before real hardware exists (Phase D2)
+- [ ] Ingest `fence/<node-id>/state`; dashboard showing per-node: current kV, voltage-over-time chart, battery, RSSI, last-seen, derived status (Phases D3–D5)
 - [ ] Historical retention target: at least a season of readings, so vegetation-growth trends are visible
+- [ ] Cut over from mock publisher to real firmware once hardware Phase 4/6 and firmware Phase 2 land (Phase D6) — deploy target (Pi vs. cloud) decided at that point, see dashboard-plan.md
 
 ### Phase 6 — Alert Logic
 
@@ -153,9 +165,10 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 firmware/            PlatformIO project (src/, platformio.ini)
   src/config.example.h  Tracked template — copy to config.h per node
   src/config.h       Real per-node config with credentials (gitignored)
-backend/             HA config snippets or custom-stack compose files, per Milestone B
+dashboard/           Mosquitto + FastAPI + Postgres/TimescaleDB + React/TS, per Milestone B decision — see dashboard-plan.md
 docs/
   software-plan.md   This file
+  dashboard-plan.md  Dashboard architecture + phased plan (mock data, ahead of hardware)
   calibration.md     Per-node calibration records
   rc-tuning-results.md  Measured RC values from hardware Phase 2
 ```
