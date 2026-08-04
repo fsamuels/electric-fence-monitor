@@ -85,14 +85,11 @@ unchanged on a Pi, a cloud VM, or a NAS. Decide this once there's an
 always-on box question to answer for real (same moment Milestone B's
 "always-on box" prerequisite gets resolved).
 
-One constraint that is *not* deferred with it: the project's whole point is
-checking status *remotely*, so any on-property deployment needs
-Tailscale/WireGuard for off-property access. That's not a footnote — it's the
-authentication boundary the [Security](#security) section relies on instead of
-exposing the API publicly, and it's a listed prerequisite for
-[Phase D6](#phase-d6--real-hardware-cutover-blocked-on-hardware-phase-46--firmware-phase-2).
-Deferring *where* the stack runs is fine; deferring *how it's reached* is how
-you end up port-forwarding an unauthenticated dashboard at the last minute.
+One constraint to keep visible while deferring it: the project's whole point is
+checking status *remotely*, so any on-property deployment eventually needs a
+remote-access answer such as Tailscale/WireGuard. That is intentionally tracked
+as a later operational decision in [Security](#security), not as a blocker for
+the mock-backed dashboard or the first real-node cutover.
 
 ---
 
@@ -110,7 +107,7 @@ you end up port-forwarding an unauthenticated dashboard at the last minute.
                                                      ┌──────────────────────┐
                                                      │  Postgres +          │
                                                      │  TimescaleDB         │
-                                                     │  nodes / readings    │
+                                                     │  devices / readings  │
                                                      └──────────┬───────────┘
                                                                 │ SQL
                                                                 ▼
@@ -316,7 +313,7 @@ status derivation, and the charts all sit on:
 | Field | Type | Meaning | Ingest behavior when absent |
 |---|---|---|---|
 | `ts` | int (epoch seconds, UTC) | When the node *took* the reading | Fall back to receipt time |
-| `seq` | int | Monotonic per-device reading counter | Fall back to `(chip_id, boot)` |
+| `seq` | int | Monotonic per-device reading counter | Best-effort dedup only until sent; `boot` helps detect resets but is not unique |
 | `report_interval_s` | int | How often this device sends a routine heartbeat | Fall back to configured per-device default |
 | `sample_interval_s` | int | How often this device reads the fence | Assume equal to `report_interval_s` |
 | `temp_c` | float | Enclosure temperature | No temperature compensation of the peak-detector diode drift; see [Calibration](#calibration) |
@@ -332,6 +329,12 @@ Reserving the field now means that work becomes additive. (Sending it requires
 NTP on wake, which costs awake-time against the hardware Phase 3 energy
 budget — a real reason for the firmware to defer it, and a good reason for the
 backend not to depend on it.)
+
+`seq` should become the actual dedup key once firmware can send it. Until then,
+`boot` is useful telemetry, not a safe uniqueness guarantee: it resets on power
+loss, so `(chip_id, boot)` can collide with an older row from the same device.
+Before `seq` exists, duplicate suppression should be conservative and
+best-effort rather than silently dropping legitimate post-reset readings.
 
 The interval fields are load-bearing for the `silent` status, which is defined
 relative to *this node's* cadence. It cannot be one global constant: mock
@@ -355,6 +358,14 @@ That distinction matters downstream:
 - Before the split ships, firmware sends only `report_interval_s` and the
   sample interval is assumed equal — which is exactly today's behavior.
 
+**The split cadence eventually needs a richer payload shape.** If a node
+samples every minute but reports every 15 minutes, a heartbeat cannot remain
+ambiguous about what it represents: the latest sample only, min/max over the
+window, or a batch of timestamped samples. The dashboard can start with today's
+single-reading payload, but the contract should record this as the next
+breaking semantic question before buffered history or report-by-exception
+firmware lands.
+
 #### Retained messages must not create readings
 
 The firmware publishes with `retain=true` so the dashboard shows a last-known
@@ -369,9 +380,11 @@ resurrects a dead node: one that stopped reporting an hour ago gets a
 brand-new row the instant ingest restarts, clearing its `silent` status.
 
 **Rule:** MQTT exposes a retain flag on received messages (paho:
-`msg.retain`). A message with that flag set updates the in-memory/`nodes`
-last-known state for display and **never inserts a `readings` row.** Live
-messages arrive with the flag clear and are inserted normally.
+`msg.retain`). A message with that flag set updates durable `device_state`
+last-known display state and **never inserts a `readings` row.** Live messages
+arrive with the flag clear and are inserted normally. Retained receipt time
+must also never clear `silent`; the original reading time, if known, is what
+matters.
 
 #### Delivery is at-most-once — gaps are normal
 
@@ -396,6 +409,12 @@ resolve interpretation at query time.
 `devices` table: `chip_id` (PK), `first_seen`, `fw_version`,
 `report_interval_s`, `sample_interval_s`. One row per physical ESP32, created
 automatically the first time an unrecognized `chip_id` publishes.
+
+`device_state` table: `chip_id` (PK), `last_payload`, `payload_ts`,
+`received_at`, `was_retained`, `ingest_seen_at`. Durable last-known state for
+display and health checks. This is separate from `readings` so retained MQTT
+replays can refresh "what did the broker last know?" without fabricating a new
+historical reading or clearing a `silent` status.
 
 `locations` table: `location_id` (PK — human-readable slug,
 `^[a-z0-9][a-z0-9-]{1,30}$`), `label`, `notes`, `created_at`. One row per
@@ -428,8 +447,8 @@ swapped, recalibrated. Without it, every intentional change is
 indistinguishable from a developing fault for the rest of that location's life.
 
 `readings` hypertable (Timescale): **`chip_id`**, `ts`, `adc_mv`, `batt_v`,
-`rssi`, `boot`, `failed_pub`, `wifi_ms`, `fw`, `temp_c`, plus the advisory
-on-device `kv`. One row per received *live* message (retained messages
+`rssi`, `boot`, `failed_pub`, `wifi_ms`, `fw`, `seq`, `temp_c`, plus the
+advisory on-device `kv`. One row per received *live* message (retained messages
 excluded — see the data contract above).
 
 **Readings key on the device, not the location**, which is the crux of the
@@ -481,9 +500,13 @@ vegetation-growth trends are visible. That requirement has to be implemented
 somewhere, and this is the somewhere — otherwise Timescale is being run for no
 reason (see the Decision section's honest accounting of why it's here):
 
-- **Continuous aggregate** bucketing `readings` to hourly and daily min/max/avg
-  of `kv` and `batt_v`, per node. The long chart ranges and the slow-decline
-  trend tier read the aggregate, not raw rows.
+- **Continuous aggregate** bucketing raw `readings` to hourly and daily
+  min/max/avg of `adc_mv` and `batt_v`, per device. Calibrated kV is then
+  resolved at query time from the assignment/calibration windows covering the
+  bucket. Do not materialize calibrated `kv` into a long-lived aggregate unless
+  the plan also defines how a backdated calibration invalidates and refreshes
+  those buckets; otherwise the "recalibration repairs history" promise stops
+  being true.
 - **Compression policy** on raw chunks older than ~30 days.
 - **Retention policy:** keep raw readings for 1 year (well past "a season"),
   keep the daily aggregate indefinitely — it's tiny and it's what the
@@ -558,11 +581,14 @@ shouldn't be folded into the status badge.
   optimization to add later.** A season of 5-node history is ~1.3M points and
   no chart library should receive that; `time_bucket` collapses it to whatever
   the range needs, which is the concrete thing Timescale is here for.
-- `GET /healthz` — **three-way**, not a boolean: `{api, broker, db}`. "API is
-  up" is close to worthless on its own; what matters operationally is whether
-  ingest still holds a broker connection and when it last wrote a row. Given
-  ingest runs as its own container, this is the only thing that distinguishes
-  "the fence is quiet" from "the pipeline is dead."
+- `GET /healthz` — **three-way**, not a boolean: `{api, broker, db}` plus
+  ingest heartbeat age. "API is up" is close to worthless on its own; what
+  matters operationally is whether ingest still holds a broker connection and
+  when it last wrote state. Because ingest runs as its own container, it must
+  publish a heartbeat somewhere the API can read — simplest is an `ingest_state`
+  row in Postgres updated on broker connect/disconnect and each successful
+  message. Without that shared heartbeat, the API cannot honestly report ingest
+  health.
 - Live updates: polling to start (simple, adequate for a 10–15 min firmware
   duty cycle); a `/ws/live` WebSocket is a stretch goal, not required for MVP.
 
@@ -652,13 +678,12 @@ arrives that way.
 
 #### Coexistence with real nodes
 
-The firmware today uses `NODE_ID` as its MQTT **client id**
-(`mqtt.connect(NODE_ID)`). Two clients presenting the same id make the broker
-evict one on each connect, producing an endless reconnect loop that is
-genuinely confusing to diagnose. Deriving the client id from `chip_id` removes
-that failure mode for real hardware, but mock publishers still have to pick
-ids that can't collide with it. Since D6 has mock and real devices live at the
-same time:
+The firmware uses `chip_id` as its MQTT **client id**. Two clients presenting
+the same id make the broker evict one on each connect, producing an endless
+reconnect loop that is genuinely confusing to diagnose. Deriving the client id
+from `chip_id` removes that failure mode for real hardware, but mock publishers
+still have to pick ids that can't collide with it. Since D6 has mock and real
+devices live at the same time:
 
 - Mock devices use reserved `chip_id` values from a range real Espressif
   silicon never uses — the locally-administered bit set, e.g. `fe0000000001`
@@ -1014,10 +1039,14 @@ Handling, applied throughout the plan above:
 
 ## Security
 
-Absent from the first draft of this plan, and one half of it must be settled
-*before* nodes are deployed rather than after.
+Security is intentionally **not** a blocker for the dashboard build or the
+first real-node cutover. The initial implementation can run on a trusted LAN
+with anonymous Mosquitto and no dashboard auth while the hardware and data path
+are being proven. The items below are still worth documenting now because they
+shape the eventual hardening path, but they are "resolve before depending on
+this unattended over the long term," not D0-D6 prerequisites.
 
-### Broker authentication and ACLs — decide before D6
+### Broker authentication and ACLs — resolve later
 
 `config.example.h` currently ships `MQTT_USER ""` with "leave empty for
 anonymous," and an unauthenticated broker means anyone on the ranch network
@@ -1025,6 +1054,8 @@ can publish to a node's state topic claiming a healthy 6.9 kV. For a system
 whose entire purpose is reporting that the fence is *not* fine, a spoofable
 "everything's fine" is the worst available failure mode — strictly worse than
 the dashboard being down, which is at least visibly broken.
+
+Later hardening path:
 
 - Per-device MQTT credentials, not one shared account.
 - Mosquitto ACL restricting each device to publishing only
@@ -1044,29 +1075,31 @@ The ACL subject is the device's factory-fixed MAC, so:
 - The ACL file is generated from the `devices` table rather than hand-written,
   which also removes the readability objection to opaque topic strings.
 
-The timing still matters: credentials are a `config.h` change plus a reflash.
-Cheap while one bench node exists, a walk to every fence post afterward — so
-this lands before deployment, not after.
+One implementation wrinkle to resolve when hardening: unknown-device
+auto-creation and locked-down ACLs do not coexist by magic. A device cannot
+first-publish to a broker that already rejects unknown credentials. The
+provisioning flow should become: read `chip_id` on the bench, pre-create the
+`devices` row, generate credentials/ACLs, flash secrets, then deploy. Until
+that flow exists, anonymous LAN MQTT keeps bring-up simple.
 
 ### API and frontend
 
 The stated point of the project is checking status *remotely*, which means
-this gets exposed beyond the LAN eventually. Auth isn't purely a deployment
-concern — it changes the API surface and the frontend, so the posture is
-recorded now even though the deployment target isn't:
+this may be exposed beyond the LAN eventually. Auth is deferred with
+deployment, but the preferred posture is recorded now:
 
 - **Local/LAN development:** no auth, as it stands today.
 - **Remote access, first choice:** no public exposure at all — reach the
   dashboard over Tailscale/WireGuard and let the VPN be the authentication
-  boundary. This is the lowest-effort option that isn't negligent, and it
-  matches the deferred-deployment posture.
+  boundary.
 - **If ever publicly exposed:** TLS terminated at a reverse proxy, plus a
   single-user session/token auth on the API. Not built now; noted so the API
   isn't designed in a way that makes it painful.
 
-MQTT over TLS on the node side is explicitly *not* planned — it's real
-overhead on a battery-powered ESP32 for a LAN-local hop, and the ACL work
-above addresses the actual threat.
+MQTT over TLS on the node side is explicitly *not* planned for the initial
+system — it's real overhead on a battery-powered ESP32 for a LAN-local hop, and
+broker ACLs are the later hardening step that addresses the practical spoofing
+risk.
 
 ---
 
@@ -1095,6 +1128,12 @@ component it's watching, which is the whole point.
   i.e. before the software plan's Phase 6 alert drills and the hardware plan's
   Phase 6 field deployment.
 
+The dead-man's switch has one dependency security does not: outbound internet.
+If a ranch-network outage is part of the failure being detected, the external
+check will fire, which is good. If the stack is deployed somewhere without
+reliable outbound access, this needs a different observer before anyone treats
+"no alert" as proof that all is well.
+
 ---
 
 ## Testing
@@ -1121,9 +1160,9 @@ indistinguishable" true as fields get added.
 - **Ingest edge cases**, each of which is a real thing the broker will hand
   it: retained flag set (must not insert), malformed JSON, missing required
   field, unexpected extra field (must not crash — the firmware will add
-  fields), wrong types, duplicate `(chip_id, boot)`, a `chip_id` failing the
-  12-hex-char pattern, and a payload `chip_id` disagreeing with the topic
-  segment.
+  fields), wrong types, duplicate `seq` when present, reused `boot` after a
+  power reset, a `chip_id` failing the 12-hex-char pattern, and a payload
+  `chip_id` disagreeing with the topic segment.
 - **Calibration application**, which is where a subtle error would silently
   corrupt every displayed number: a reading converts using the constants valid
   at its own `ts` rather than the newest ones; a backdated calibration row
@@ -1177,7 +1216,8 @@ dashboard/
   docker-compose.yml
   mosquitto/
     mosquitto.conf
-    aclfile                  Per-node publish restrictions (see Security)
+    aclfile                  Later hardening: per-device publish restrictions
+                             (see Security)
   backend/
     app/
       main.py                FastAPI app + router mounts
@@ -1231,10 +1271,10 @@ firmware is the other party to it.
 ## Phased plan
 
 ### Phase D0 — Scaffolding
-- [ ] `contract/fence-state.schema.json` + example payloads: the nine fields the firmware sends today as required, the reserved optional fields (`ts`, `seq`, `report_interval_s`, `sample_interval_s`, `chip_id`, `temp_c`) as permitted-but-absent, and the `node` slug pattern enforced
+- [ ] `contract/fence-state.schema.json` + example payloads: `chip_id` plus the eight non-identity fields the firmware sends today as required (`fw`, `kv`, `adc_mv`, `batt_v`, `rssi`, `boot`, `failed_pub`, `wifi_ms`); reserved optional fields (`ts`, `seq`, `report_interval_s`, `sample_interval_s`, `temp_c`) permitted-but-absent. No `node` field remains in the v1 dashboard contract
 - [ ] `docker-compose.yml` wiring Mosquitto, Postgres+Timescale, empty FastAPI app, empty ingest container, empty React app
 - [ ] Networking between services confirmed
-- [ ] `GET /healthz` returning three-way api/broker/db status
+- [ ] `GET /healthz` returning api/broker/db plus ingest heartbeat status
 - [ ] OpenAPI → TypeScript client generation wired as a build step
 - [ ] CI workflow: `firmware/lint.sh`, backend lint/test, frontend typecheck/test, contract validation
 
@@ -1242,24 +1282,25 @@ firmware is the other party to it.
 > afternoon goes.** It defaults to `allow_anonymous false` with a
 > localhost-only listener, so a minimal `mosquitto.conf` in Docker silently
 > refuses every connection from other containers. The dev config needs an
-> explicit `listener 1883 0.0.0.0`; anonymous access is acceptable *only*
-> until the Security section's per-node credentials land, which is a
-> prerequisite for D6, not for D0.
+> explicit `listener 1883 0.0.0.0`. Anonymous access is acceptable for initial
+> LAN development and real-node bring-up; per-device credentials are tracked in
+> Security as later hardening, not a D0 or D6 gate.
 
-**Exit:** `docker compose up` brings up all six services; `/healthz` reports all three subsystems green; React dev server reachable; CI green on an empty stack.
+**Exit:** `docker compose up` brings up all six services; `/healthz` reports api/db/broker plus fresh ingest heartbeat green; React dev server reachable; CI green on an empty stack.
 
 ### Phase D1 — Data contract & storage
-- [ ] `nodes` / `readings` schema; `create_hypertable` in the initial migration; `ts` as `timestamptz`
+- [ ] `devices` / `device_state` / `readings` schema; `create_hypertable` in the initial migration; `ts` as `timestamptz`
 - [ ] `calibrations` table — versioned with `valid_from`/`valid_to`, storing the raw fit points, never mutated in place
 - [ ] `fence_events` table — operator-annotated timeline of deliberate physical changes
+- [ ] `ingest_state` heartbeat row so `/healthz` can report whether the subscriber is connected and recently active
 - [ ] MQTT ingest subscriber (`fence/+/state`) in its own container, validating against the contract schema
-- [ ] **Retained-message handling: retained → update last-known state, never insert a reading**
-- [ ] Optional `ts` / `seq` / `report_interval_s` / `sample_interval_s` / `chip_id` / `temp_c` honored when present, sensible fallbacks when absent
+- [ ] **Retained-message handling: retained → update durable `device_state`, never insert a reading, never clear `silent` from retained receipt time**
+- [ ] Optional `ts` / `seq` / `report_interval_s` / `sample_interval_s` / `temp_c` honored when present, sensible fallbacks when absent
 - [ ] `devices` / `locations` / `node_assignments` tables, with **non-overlapping validity windows enforced in the schema** for both `chip_id` and `location_id`
 - [ ] **Identity checks at ingest**: `chip_id` matches `^[0-9a-f]{12}$` and agrees with the topic segment; unrecognized devices auto-create as *unassigned*; locations never auto-create
 - [ ] Assignment change raises a `fence_events` row automatically — board swaps and relocations both land on the timeline
-- [ ] Continuous aggregate (hourly + daily), compression policy, retention policy
-- [ ] Ingest edge-case tests: malformed, missing field, extra field, retained replay, malformed `chip_id`, topic/payload mismatch, reading from an unassigned device, overlapping assignment windows rejected
+- [ ] Continuous aggregate (hourly + daily) over raw `adc_mv`/`batt_v`, compression policy, retention policy
+- [ ] Ingest edge-case tests: malformed, missing field, extra field, retained replay, malformed `chip_id`, topic/payload mismatch, reading from an unassigned device, overlapping assignment windows rejected, post-reset `boot` reuse not treated as a hard duplicate
 
 **Exit:** manually publishing one MQTT message produces exactly one row; restarting the ingest container ten times produces **zero** additional rows; a message from an unknown `chip_id` lands in the unassigned inbox rather than erroring or inventing a location.
 
@@ -1268,6 +1309,7 @@ firmware is the other party to it.
 - [ ] Remaining scenarios: slow-decline, low-voltage, fence-down, node-silent, battery-drain
 - [ ] `--cadence realtime` option, covering both the current 600 s single-interval model and the recommended 60 s sample / 900 s report split
 - [ ] **Report-by-exception simulation**: routine heartbeats *plus* immediate off-cadence transmits on threshold crossings, so irregular arrival spacing is exercised before real firmware produces it
+- [ ] Explicit mock behavior for the future split-cadence payload question: latest-only, summary, or timestamped batch. Pick one before firmware buffers multiple samples per report
 - [ ] **Backfill mode**: N days of history at real spacing, written directly to the DB, including plausible `fence_events` rows to annotate against
 - [ ] Emit `temp_c`; a **board-swap scenario** (assignment closed and reopened at one location with a different `chip_id`), a **relocation scenario** (one `chip_id` moved between locations), and an **uncalibrated scenario** (no `calibrations` row covering the readings)
 - [ ] Reserved mock `chip_id` range (locally-administered bit set, e.g. `fe0000000001`…) so mock and real hardware never collide and mock rows stay separable
@@ -1283,6 +1325,7 @@ firmware is the other party to it.
 - [ ] `derive_status()` as a pure, I/O-free function per the thresholds table above
 - [ ] Windows expressed as multiples of each node's `report_interval_s`, never absolute seconds or the sample interval
 - [ ] Table-driven status tests across every scenario and boundary condition, including irregular arrival from off-cadence fault transmits
+- [ ] Alert/status tests cover the report-by-exception ownership question: backend debounce still sees enough low samples, or firmware sends an explicit local fault state that changes the backend rule
 - [ ] Retroactive-recalibration test: inserting a backdated `calibrations` row changes historical kV **without touching `readings`**
 
 **Exit:** API returns the correct derived status for each mock scenario, and the same status for a device whether it's running at 10 s or 900 s cadence; adding a calibration row retroactively corrects history in one write; relocating a device in the assignment table leaves its prior readings attributed to the prior location.
@@ -1330,9 +1373,9 @@ are not, and this is where the plan's mock-vs-real assumptions get audited.
 
 **Before hardware arrives:**
 - [ ] Run the full stack against `--cadence realtime` mock nodes for ≥24 h; confirm charts, `silent` timeouts, and alerting all behave at real spacing — under both the single-interval and split sample/report models
-- [ ] Per-device MQTT credentials + Mosquitto ACLs generated from each board's `chip_id` — before nodes are flashed and deployed, not after. Because the id is factory-fixed, these are written once and survive every relocation
-- [ ] Remote access path decided and working (Tailscale/WireGuard), since off-property visibility is the point of the project
-- [ ] Record each board's `chip_id` at flash time (serial console, or `esptool.py read_mac` over USB) — it's the ACL subject and the provisioning key
+- [ ] Record each board's `chip_id` at flash time (serial console, or `esptool.py read_mac` over USB) — it's the provisioning key and the future ACL subject
+- [ ] Optional later-hardening dry run: pre-create `devices` rows and generate per-device MQTT credentials/ACLs from `chip_id`, but do not block cutover on this while running on a trusted LAN
+- [ ] Remote access path noted if needed (Tailscale/WireGuard preferred), but not required for the first local cutover
 
 **Cutover:**
 - [ ] Point real firmware's `MQTT_HOST` config at this broker (dev, then wherever it's deployed)
@@ -1361,10 +1404,15 @@ are not, and this is where the plan's mock-vs-real assumptions get audited.
   escalation chains, multiple delivery channels, and the slow-decline trend
   tier (software plan Phase 6). One channel, one notification per transition.
 - **Deployment target** — deferred, see Decision section above.
-- **Public internet exposure** — remote access is via VPN; TLS termination and
-  API session auth are designed-for but not built (see Security).
+- **Public internet exposure** — remote access is deferred; VPN access is the
+  preferred later path, while TLS termination and API session auth are
+  designed-for but not built (see Security).
+- **Broker hardening** — per-device MQTT credentials, generated ACLs, and
+  `allow_anonymous false` are documented in Security as later work. Initial
+  implementation can use anonymous MQTT on a trusted LAN so this does not slow
+  down the hardware/data-path bring-up.
 - **MQTT over TLS on the node side** — rejected on power/complexity grounds
-  for a LAN-local hop; broker ACLs address the actual threat.
+  for a LAN-local hop; broker ACLs are the likely later hardening step.
 - **QoS 1 delivery** — deferred unless observed message loss in the field
   justifies it; `seq` is reserved in the contract so it can be added later
   without a breaking change.

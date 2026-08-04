@@ -5,13 +5,13 @@ First-pass firmware for the fence monitor node (software plan Phases 1–2): wak
 ## Setup
 
 1. Install [PlatformIO](https://platformio.org/) (`pip install platformio` or the VS Code extension).
-2. Copy the config template and edit it for the node being built:
+2. Copy the config template and edit it for the device being built:
 
    ```sh
    cp src/config.example.h src/config.h
    ```
 
-   `src/config.h` is gitignored — it holds Wi-Fi credentials and the per-node calibration constant.
+   `src/config.h` is gitignored — it holds Wi-Fi credentials and the coarse per-device calibration constant. Identity is not configured; firmware derives `chip_id` from the ESP32 MAC at runtime.
 3. Build / flash / watch:
 
    ```sh
@@ -22,19 +22,15 @@ First-pass firmware for the fence monitor node (software plan Phases 1–2): wak
 
 ## What it publishes
 
-One retained message per wake cycle to `fence/<NODE_ID>/state`:
-
-> **Changing in Phase 2.** The topic and identity scheme move to
-> `fence/<chip_id>/state`, keyed on the ESP32's factory eFuse MAC, and
-> `NODE_ID` leaves `config.h` entirely — which fence a board is watching
-> becomes a versioned assignment in the backend, so relocating hardware needs
-> no reflash. See
-> [docs/dashboard-plan.md](../docs/dashboard-plan.md#identity-devices-locations-and-assignments).
-> This section documents the firmware as it stands today.
+One retained message per wake cycle to `fence/<chip_id>/state`, keyed on the
+ESP32's MAC-derived hardware identity. Which fence a board is watching becomes
+a versioned assignment in the backend, so relocating hardware needs no reflash.
+See
+[docs/dashboard-plan.md](../docs/dashboard-plan.md#identity-devices-locations-and-assignments).
 
 ```json
 {
-  "node": "fence-01",
+  "chip_id": "a4c1385f2b10",
   "fw": "0.1.0",
   "kv": 6.93,
   "adc_mv": 1872,
@@ -48,6 +44,7 @@ One retained message per wake cycle to `fence/<NODE_ID>/state`:
 
 | Field | Meaning |
 |---|---|
+| `chip_id` | ESP32 MAC-derived hardware identity; also the MQTT topic segment |
 | `kv` | Calibrated fence voltage (`adc_mv * CAL_KV_PER_MV + CAL_KV_OFFSET`) |
 | `adc_mv` | Raw max millivolts seen at the ADC over the sample window — kept in the payload so calibration can be redone from history |
 | `batt_v` | Battery voltage via divider on `PIN_BATT_ADC` |
@@ -73,7 +70,7 @@ Feed a known DC level (0–3 V, e.g. from a bench supply or a potentiometer acro
 
 ## Calibration
 
-`CAL_KV_PER_MV` defaults to the theoretical divider ratio (0.003704 kV/mV). After the hardware Phase 4 calibration against the handheld tester, replace it per node and record the derivation in [`docs/calibration.md`](../docs/calibration.md).
+`CAL_KV_PER_MV` defaults to the theoretical divider ratio (0.003704 kV/mV). After the hardware Phase 4 calibration against the handheld tester, replace it per device/assignment and record the derivation in [`docs/calibration.md`](../docs/calibration.md).
 
 ## Not yet implemented (later phases)
 

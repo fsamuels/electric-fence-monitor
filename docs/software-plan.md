@@ -83,11 +83,11 @@ Both candidates satisfy the confirmed requirement: **dashboard to check anytime 
 - [ ] Wi-Fi connect with a bounded timeout — a node in a weak-signal spot must not burn its battery retrying; on failure, log locally (RTC memory counter) and go back to sleep
 - [ ] Telemetry payload: `chip_id` (eFuse MAC), firmware version, raw ADC max, computed kV, battery voltage, Wi-Fi RSSI, boot/wake counter
   - Battery voltage and RSSI are not optional extras: RSSI feeds the antenna-vs-LoRa decision, battery feeds the "dead node vs. dead fence" distinction
-- [ ] Per-node config (Wi-Fi credentials, coarse local calibration constant, sample/report intervals) separated from code — build flags or NVS. **Node identity is deliberately *not* in this list:** it comes from eFuse, so onboarding nodes 2–5 needs no per-node identity config at all
-- [ ] **Identity comes from the hardware, the name comes from the backend.** Remove `NODE_ID` from `config.h` entirely. The node derives `chip_id` from the eFuse base MAC at runtime, publishes to `fence/<chip_id>/state`, and uses `chip_id` for its MQTT client id. Which *fence* a board is watching is a versioned assignment held in the database, so relocating hardware is a dashboard action with no reflash — full rationale in [dashboard-plan.md](dashboard-plan.md#identity-devices-locations-and-assignments)
+- [ ] Per-device config (Wi-Fi credentials, coarse local calibration constant, sample/report intervals) separated from code — build flags or NVS. **Device identity is deliberately *not* in this list:** it comes from the ESP32 MAC-derived `chip_id`, so onboarding devices 2–5 needs no per-device identity config at all
+- [ ] **Identity comes from the hardware, the name comes from the backend.** The node derives `chip_id` from the ESP32 MAC at runtime, publishes to `fence/<chip_id>/state`, and uses `chip_id` for its MQTT client id. Which *fence* a board is watching is a versioned assignment held in the database, so relocating hardware is a dashboard action with no reflash — full rationale in [dashboard-plan.md](dashboard-plan.md#identity-devices-locations-and-assignments)
   - The classic ESP32 has no 128-bit unique id (that's S2/S3/C3), so the factory 48-bit base MAC *is* the hardware identity. It's readable before Wi-Fi comes up, so a wake that never associates still knows who it is. Store all 48 bits — Espressif OUI prefixes repeat within a batch, so truncation discards the bytes that carry the entropy
   - **Watch the byte order.** `ESP.getEfuseMac()` returns a `uint64_t` byte-reversed relative to what `WiFi.macAddress()` prints; formatted naively it won't match `esptool.py read_mac` or the router's DHCP table. Pin the format in `contract/fence-state.schema.json` and verify on first hardware
-  - Print `chip_id` on the serial console at boot — it's the ACL subject and the provisioning key, and you need it at flash time
+  - Print `chip_id` on the serial console at boot — it's the provisioning key and eventual ACL subject
 - [ ] Publish via MQTT: `fence/<chip_id>/state` as a JSON document, with MQTT retain so the dashboard shows the last reading immediately
 
 **Exit criteria:** bench unit runs the full cycle unattended for 24 h; measured awake-time matches the hardware energy budget assumptions.
@@ -134,7 +134,7 @@ Underway ahead of hardware, against mock MQTT data — see
 - [ ] **`fence_events` timeline** (Phases D1/D4/D5): operator-annotated record of deliberate physical changes — wire added, charger serviced, vegetation cleared, board swapped, recalibrated — rendered as chart annotations. Without it the trend tier cannot distinguish an intentional change from a developing fault, and every fence extension reads as an anomaly for the rest of the node's life
 - [ ] **Device/location/assignment model** (Phase D1): readings key on `chip_id`; which fence that was, and what constants apply, both resolve at query time from versioned assignment and calibration windows. Relocating hardware is a database write, not a reflash — and an unrecognized board arrives in an unassigned inbox rather than inventing a location
 - [ ] Historical retention target: at least a season of readings, so vegetation-growth trends are visible — implemented as Timescale continuous aggregates + retention/compression policies (Phase D1)
-- [ ] Per-node MQTT credentials + broker ACLs before any node is flashed for deployment — a spoofable "fence is fine" is the worst failure mode this system has, and retrofitting it means reflashing every deployed node (dashboard-plan Security section)
+- [ ] Security hardening is documented but deferred: per-device MQTT credentials, broker ACLs, and remote-access auth are later work, not implementation blockers while the stack runs on a trusted LAN (dashboard-plan Security section)
 - [ ] Minimal push alerting + external dead-man's switch (Phase D5.5) — pulled ahead of Phase 6 because it's the primary requirement, not a nicety
 - [ ] Cut over from mock publisher to real firmware once hardware Phase 4/6 and firmware Phase 2 land (Phase D6) — deploy target (Pi vs. cloud) decided at that point, see dashboard-plan.md. Note the cutover is a re-tuning exercise, not a config change: real cadence is ~60× slower than mock, so every time-based threshold and chart range is re-validated there
 
@@ -182,7 +182,7 @@ Sequenced mitigation, cheapest first — triggered by the site survey in hardwar
 contract/            Authoritative MQTT payload schema shared by firmware and backend
 firmware/            PlatformIO project (src/, platformio.ini)
   src/config.example.h  Tracked template — copy to config.h per node
-  src/config.h       Real per-node config with credentials (gitignored)
+  src/config.h       Real per-device config with credentials (gitignored)
 dashboard/           Mosquitto + FastAPI + Postgres/TimescaleDB + React/TS, per Milestone B decision — see dashboard-plan.md
 docs/
   software-plan.md   This file

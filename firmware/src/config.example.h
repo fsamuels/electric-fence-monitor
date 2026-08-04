@@ -1,11 +1,8 @@
-// Per-node configuration.
-// Copy this file to config.h (gitignored) and edit for the node being built.
-// Everything node-specific lives here so nodes 2+ are a config change,
-// not a code fork.
+// Per-device configuration.
+// Copy this file to config.h (gitignored) and edit for the device being built.
+// The device identity is not configured here; firmware derives chip_id from
+// the ESP32 eFuse MAC at runtime.
 #pragma once
-
-// --- Node identity ---
-#define NODE_ID "fence-01"
 
 // --- Wi-Fi ---
 #define WIFI_SSID "your-ssid"
@@ -19,7 +16,7 @@
 #define MQTT_PORT 1883
 #define MQTT_USER ""      // leave empty for anonymous
 #define MQTT_PASSWORD ""
-// State is published retained to: fence/<NODE_ID>/state
+// State is published retained to: fence/<chip_id>/state
 
 // --- Pins ---
 // GPIO 34/35 are input-only ADC1 pins: no pull-ups to fight, and ADC1

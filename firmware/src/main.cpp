@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
+#include <esp_mac.h>
 #include <esp_sleep.h>
 
 #include <cstdio>
@@ -28,6 +29,13 @@ RTC_DATA_ATTR uint32_t failedPublishes = 0;
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
+
+static void formatChipId(char *buffer, size_t size) {
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  snprintf(buffer, size, "%02x%02x%02x%02x%02x%02x",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
 
 // Continuously sample the peak detector output and keep the max.
 // analogReadMilliVolts applies the factory ADC calibration, which matters:
@@ -67,15 +75,15 @@ static bool connectWifi() {
   return true;
 }
 
-static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
-                         int32_t rssi, uint32_t wifiMs) {
+static bool publishState(const char *chipId, uint32_t fenceMv, float fenceKv,
+                         float battV, int32_t rssi, uint32_t wifiMs) {
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
 
   bool connected;
   if (strlen(MQTT_USER) > 0) {
-    connected = mqtt.connect(NODE_ID, MQTT_USER, MQTT_PASSWORD);
+    connected = mqtt.connect(chipId, MQTT_USER, MQTT_PASSWORD);
   } else {
-    connected = mqtt.connect(NODE_ID);
+    connected = mqtt.connect(chipId);
   }
   if (!connected) {
     Serial.printf("MQTT connect failed, state=%d\n", mqtt.state());
@@ -83,7 +91,7 @@ static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
   }
 
   JsonDocument doc;
-  doc["node"] = NODE_ID;
+  doc["chip_id"] = chipId;
   doc["fw"] = FW_VERSION;
   doc["kv"] = roundf(fenceKv * 100.0f) / 100.0f;
   doc["adc_mv"] = fenceMv;
@@ -94,7 +102,7 @@ static bool publishState(uint32_t fenceMv, float fenceKv, float battV,
   doc["wifi_ms"] = wifiMs;
 
   char topic[64];
-  snprintf(topic, sizeof(topic), "fence/%s/state", NODE_ID);
+  snprintf(topic, sizeof(topic), "fence/%s/state", chipId);
   char payload[MQTT_MAX_PACKET_SIZE];
   const size_t len = serializeJson(doc, payload, sizeof(payload));
 
@@ -122,7 +130,9 @@ static void goToSleep() {
 void setup() {
   ++bootCount;
   Serial.begin(115200);
-  Serial.printf("\n%s fw %s boot %u\n", NODE_ID, FW_VERSION, bootCount);
+  char chipId[13];
+  formatChipId(chipId, sizeof(chipId));
+  Serial.printf("\n%s fw %s boot %u\n", chipId, FW_VERSION, bootCount);
 
   analogSetPinAttenuation(PIN_FENCE_ADC, ADC_11db);  // full 0-3.3 V range
   analogSetPinAttenuation(PIN_BATT_ADC, ADC_11db);
@@ -142,7 +152,7 @@ void setup() {
     const int32_t rssi = WiFi.RSSI();
     Serial.printf("wifi up in %u ms, rssi %d dBm\n", wifiMs,
                   static_cast<int>(rssi));
-    published = publishState(fenceMv, fenceKv, battV, rssi, wifiMs);
+    published = publishState(chipId, fenceMv, fenceKv, battV, rssi, wifiMs);
   } else {
     Serial.println("wifi connect timed out");
   }
