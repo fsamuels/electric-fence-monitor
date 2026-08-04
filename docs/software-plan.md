@@ -126,8 +126,11 @@ Underway ahead of hardware, against mock MQTT data — see
 (D0–D6). Summary:
 
 - [ ] Stand up Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript via Docker Compose (dashboard-plan Phases D0–D1)
-- [ ] Mock publisher exercises every node scenario (normal, low-voltage, fence-down, silent, battery-drain) so the dashboard is fully testable before real hardware exists (Phase D2)
-- [ ] Ingest `fence/<node-id>/state`; dashboard showing per-node: current kV, voltage-over-time chart, battery, RSSI, last-seen, derived status (Phases D3–D5)
+- [ ] Mock publisher exercises every node scenario (normal, low-voltage, fence-down, silent, battery-drain, board-swap, uncalibrated) plus report-by-exception arrival, so the dashboard is fully testable before real hardware exists (Phase D2)
+- [ ] Ingest `fence/<node-id>/state`; dashboard showing per-node: current kV, voltage-over-time chart, battery, RSSI, last-seen, link quality, derived status (Phases D3–D5)
+- [ ] **Calibration applied at query time from a versioned `calibrations` table** (Phases D1/D3) — since `adc_mv` is stored raw, recalibration is a database update that repairs all history retroactively, with no site visit and no reflash. This is what removes calibration from the list of reasons to walk the fence line
+- [ ] **`fence_events` timeline** (Phases D1/D4/D5): operator-annotated record of deliberate physical changes — wire added, charger serviced, vegetation cleared, board swapped, recalibrated — rendered as chart annotations. Without it the trend tier cannot distinguish an intentional change from a developing fault, and every fence extension reads as an anomaly for the rest of the node's life
+- [ ] **Node identity enforced at ingest** (Phase D1): slug pattern, payload/topic agreement, and automatic board-swap events on `chip_id` change
 - [ ] Historical retention target: at least a season of readings, so vegetation-growth trends are visible — implemented as Timescale continuous aggregates + retention/compression policies (Phase D1)
 - [ ] Per-node MQTT credentials + broker ACLs before any node is flashed for deployment — a spoofable "fence is fine" is the worst failure mode this system has, and retrofitting it means reflashing every deployed node (dashboard-plan Security section)
 - [ ] Minimal push alerting + external dead-man's switch (Phase D5.5) — pulled ahead of Phase 6 because it's the primary requirement, not a nicety

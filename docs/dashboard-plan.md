@@ -286,7 +286,8 @@ status derivation, and the charts all sit on:
 |---|---|---|---|
 | `ts` | int (epoch seconds, UTC) | When the node *took* the reading | Fall back to receipt time |
 | `seq` | int | Monotonic per-node reading counter | Fall back to `(node, boot)` |
-| `sleep_interval_s` | int | This node's configured duty cycle | Fall back to configured per-node default |
+| `report_interval_s` | int | How often this node sends a routine heartbeat | Fall back to configured per-node default |
+| `sample_interval_s` | int | How often this node reads the fence | Assume equal to `report_interval_s` |
 | `chip_id` | string (hex) | Device identity from the ESP32 eFuse MAC | Board swaps and duplicate-`node` detection unavailable; see [Node identity](#node-identity--node-is-a-location-not-a-board) |
 | `temp_c` | float | Enclosure temperature | No temperature compensation of the peak-detector diode drift; see [Calibration](#calibration) |
 
@@ -299,12 +300,27 @@ NTP on wake, which costs awake-time against the hardware Phase 3 energy
 budget — a real reason for the firmware to defer it, and a good reason for the
 backend not to depend on it.)
 
-`sleep_interval_s` is load-bearing for the `silent` status, which is defined
+The interval fields are load-bearing for the `silent` status, which is defined
 relative to *this node's* cadence. It cannot be one global constant: mock
-nodes report every 5–15 s and real nodes every 600 s, so a single value makes
-every real node permanently silent or every mock node permanently fine — and
-during the D6 cutover both are live at once. Self-describing in the payload is
-the preferred fix; a per-node DB column is the fallback until firmware sends it.
+nodes report every 5–15 s and real nodes every 600–900 s, so a single value
+makes every real node permanently silent or every mock node permanently fine —
+and during the D6 cutover both are live at once. Self-describing in the payload
+is the preferred fix; a per-node DB column is the fallback until firmware
+sends it.
+
+**Two intervals, because they stop being the same number.** Once the
+[cadence recommendation](#reporting-cadence-and-alert-latency) lands, a node
+samples every 60 s but only transmits a heartbeat every 900 s — plus an
+immediate, off-cadence transmit whenever a reading crosses a fault threshold.
+That distinction matters downstream:
+
+- **`silent` is measured against `report_interval_s`**, never the sample
+  interval. Measuring against sampling would fire an alert every heartbeat gap.
+- **Arrival is no longer uniform.** A fault message arrives between
+  heartbeats, so ingest, the charts, and any inter-arrival logic must treat
+  irregular spacing as normal rather than as a gap or a duplicate.
+- Before the split ships, firmware sends only `report_interval_s` and the
+  sample interval is assumed equal — which is exactly today's behavior.
 
 #### Retained messages must not create readings
 
@@ -341,7 +357,7 @@ weak mesh Wi-Fi that is already a named project risk. Two implications:
 ### Storage
 
 `nodes` table: `node_id` (PK), `first_seen`, `fw_version`, `chip_id`,
-`sleep_interval_s`. Note there is no `calibrated` boolean — whether a node is
+`report_interval_s`, `sample_interval_s`. Note there is no `calibrated` boolean — whether a node is
 calibrated is derived from whether a `calibrations` row covers the reading's
 timestamp, which is strictly more informative.
 
@@ -419,7 +435,7 @@ differ per node/season):
 | `ok` | `kv` ≥ low threshold (default 5 kV) |
 | `low` | `kv` < low threshold for N consecutive readings (default 2–3) |
 | `down` | `kv` < down floor (default 1 kV) or pinned at zero |
-| `silent` | no reading for > 2–3× **that node's** sleep interval (from `sleep_interval_s`, not a global constant — see data contract) |
+| `silent` | no reading for > 2–3× **that node's** `report_interval_s` (never the sample interval, and never a global constant — see data contract) |
 
 **Implement this as a pure function** — `derive_status(readings, thresholds,
 node) -> Status` — with no I/O and no framework coupling. It has to be
@@ -713,7 +729,7 @@ Two consequences worth naming:
    it's exactly why `ts` and `seq` are reserved in the contract now. The
    reservation pays for itself here.
 
-Backend-side, nothing structural changes: `sleep_interval_s` in the payload
+Backend-side, nothing structural changes: `report_interval_s` in the payload
 already carries the cadence per node, and every window is defined as a
 multiple of it rather than in absolute seconds.
 
@@ -910,7 +926,7 @@ Handling, applied throughout the plan above:
 2. Chart ranges and bucket sizes are chosen from the **real** cadence table in
    [Frontend](#frontend).
 3. Anything window-based — `low` consecutive counts, `silent` timeout, trend
-   detection — is expressed in **multiples of the node's `sleep_interval_s`**,
+   detection — is expressed in **multiples of the node's `report_interval_s`**,
    never in absolute seconds. This is what makes the same config correct for
    both a 10 s mock node and a 600 s real one.
 4. Backfill at real spacing is the default way to develop chart, aggregate,
@@ -1015,7 +1031,15 @@ indistinguishable" true as fields get added.
 - **Ingest edge cases**, each of which is a real thing the broker will hand
   it: retained flag set (must not insert), malformed JSON, missing required
   field, unexpected extra field (must not crash — the firmware will add
-  fields), wrong types, unknown node id, duplicate `(node, boot)`.
+  fields), wrong types, unknown node id, duplicate `(node, boot)`, node id
+  failing the slug pattern, payload `node` disagreeing with the topic, and a
+  changed `chip_id` on a known node.
+- **Calibration application**, which is where a subtle error would silently
+  corrupt every displayed number: a reading converts using the constants valid
+  at its own `ts` rather than the newest ones; a backdated calibration row
+  retroactively changes historical kV without mutating `readings`; a reading
+  with no covering calibration comes back flagged provisional rather than
+  guessing; overlapping validity windows are rejected at write time.
 
 ### Integration
 
@@ -1073,6 +1097,9 @@ dashboard/
       models.py              SQLAlchemy models (Timescale hypertable)
       db.py
       routers/nodes.py
+      routers/calibrations.py  Versioned constants; kV is computed here,
+                               not read from the payload
+      routers/events.py        fence_events read + write
       routers/health.py      /healthz — api / broker / db, three-way
       config.py              thresholds, consecutive-reading counts,
                              cadence multiples (never absolute seconds)
@@ -1095,6 +1122,8 @@ dashboard/
         StatusBadge.tsx
         LinkQuality.tsx      failed_pub / wifi_ms / rssi — feeds the
                              antenna-vs-LoRa decision
+        EventAnnotations.tsx fence_events markers overlaid on charts
+        LogChangeDialog.tsx  Operator records a physical change
       pages/Dashboard.tsx    Node grid from D4 onward (one card, then many)
     Dockerfile
     package.json
@@ -1108,7 +1137,7 @@ firmware is the other party to it.
 ## Phased plan
 
 ### Phase D0 — Scaffolding
-- [ ] `contract/fence-state.schema.json` + example payloads, derived from the firmware's current message
+- [ ] `contract/fence-state.schema.json` + example payloads: the nine fields the firmware sends today as required, the reserved optional fields (`ts`, `seq`, `report_interval_s`, `sample_interval_s`, `chip_id`, `temp_c`) as permitted-but-absent, and the `node` slug pattern enforced
 - [ ] `docker-compose.yml` wiring Mosquitto, Postgres+Timescale, empty FastAPI app, empty ingest container, empty React app
 - [ ] Networking between services confirmed
 - [ ] `GET /healthz` returning three-way api/broker/db status
@@ -1127,45 +1156,58 @@ firmware is the other party to it.
 
 ### Phase D1 — Data contract & storage
 - [ ] `nodes` / `readings` schema; `create_hypertable` in the initial migration; `ts` as `timestamptz`
+- [ ] `calibrations` table — versioned with `valid_from`/`valid_to`, storing the raw fit points, never mutated in place
+- [ ] `fence_events` table — operator-annotated timeline of deliberate physical changes
 - [ ] MQTT ingest subscriber (`fence/+/state`) in its own container, validating against the contract schema
 - [ ] **Retained-message handling: retained → update last-known state, never insert a reading**
-- [ ] Optional `ts` / `seq` / `sleep_interval_s` honored when present, sensible fallbacks when absent
+- [ ] Optional `ts` / `seq` / `report_interval_s` / `sample_interval_s` / `chip_id` / `temp_c` honored when present, sensible fallbacks when absent
+- [ ] **Node identity checks**: `node` matches `^[a-z0-9][a-z0-9-]{1,30}$`; payload `node` agrees with the topic it arrived on (mismatch is a misconfiguration — reject loudly, don't store)
+- [ ] **`chip_id` change on a known node raises a board-swap `fence_events` row automatically**; two chip ids interleaving under one `node` is a duplicate-config error, not an erratic fence — surface it as such
 - [ ] Continuous aggregate (hourly + daily), compression policy, retention policy
-- [ ] Ingest edge-case tests: malformed, missing field, extra field, unknown node, retained replay
+- [ ] Ingest edge-case tests: malformed, missing field, extra field, unknown node, retained replay, bad node id, topic/payload mismatch, chip id change
 
-**Exit:** manually publishing one MQTT message produces exactly one row; restarting the ingest container ten times produces **zero** additional rows.
+**Exit:** manually publishing one MQTT message produces exactly one row; restarting the ingest container ten times produces **zero** additional rows; publishing under a changed `chip_id` produces a board-swap event rather than a silent overwrite.
 
 ### Phase D2 — Mock publisher
 - [ ] Normal-operation scenario for one simulated node, live mode at accelerated cadence
 - [ ] Remaining scenarios: slow-decline, low-voltage, fence-down, node-silent, battery-drain
-- [ ] `--cadence realtime` (600 s) option
-- [ ] **Backfill mode**: N days of history at real 600 s spacing, written directly to the DB
+- [ ] `--cadence realtime` option, covering both the current 600 s single-interval model and the recommended 60 s sample / 900 s report split
+- [ ] **Report-by-exception simulation**: routine heartbeats *plus* immediate off-cadence transmits on threshold crossings, so irregular arrival spacing is exercised before real firmware produces it
+- [ ] **Backfill mode**: N days of history at real spacing, written directly to the DB, including plausible `fence_events` rows to annotate against
+- [ ] Emit `chip_id` and `temp_c`; a **board-swap scenario** (same `node`, new `chip_id`) and an **uncalibrated scenario** (no `calibrations` row covering the readings)
 - [ ] Distinct client ids (`mock-pub-<n>`) and namespaced node ids (`mock-01`…)
 - [ ] Contract test: every scenario's payload validates against `contract/fence-state.schema.json`
 
-**Exit:** DB fills with plausible time series across every scenario on demand; `--backfill 90d` produces a season of realistically-spaced history in seconds.
+**Exit:** DB fills with plausible time series across every scenario on demand; `--backfill 90d` produces a season of realistically-spaced history in seconds; a fault transmit arriving between heartbeats is stored and charted correctly rather than treated as a gap.
 
 ### Phase D3 — API
 - [ ] `GET /nodes`, `GET /nodes/{id}`, `GET /nodes/{id}/readings?since=&bucket=`
+- [ ] **kV computed at query time** by joining each reading to the `calibrations` row whose validity window covers its `ts` — never read from the payload's advisory `kv`
+- [ ] Readings with no covering calibration returned as **provisional**, carrying `adc_mv` and an explicit flag rather than a plausible-looking number
+- [ ] `GET`/`POST /fence-events` — read for chart annotation, write for the "log a change" affordance
 - [ ] `derive_status()` as a pure, I/O-free function per the thresholds table above
-- [ ] Windows expressed as multiples of each node's `sleep_interval_s`, never absolute seconds
-- [ ] Table-driven status tests across every scenario and boundary condition
+- [ ] Windows expressed as multiples of each node's `report_interval_s`, never absolute seconds or the sample interval
+- [ ] Table-driven status tests across every scenario and boundary condition, including irregular arrival from off-cadence fault transmits
+- [ ] Retroactive-recalibration test: inserting a backdated `calibrations` row changes historical kV **without touching `readings`**
 
-**Exit:** API returns the correct derived status for each mock scenario, and the same status for a node whether it's running at 10 s or 600 s cadence.
+**Exit:** API returns the correct derived status for each mock scenario, and the same status for a node whether it's running at 10 s or 900 s cadence; adding a calibration row retroactively corrects a node's entire history in one write.
 
 ### Phase D4 — Frontend MVP
 - [ ] Node grid shell rendering a single `NodeCard`: status badge, current kV, voltage-over-time chart
 - [ ] Chart ranges 24h/7d/30d/season with server-side bucketing, validated against backfilled data
-- [ ] Provisional/uncalibrated presentation, with `adc_mv` shown alongside kV
+- [ ] Provisional presentation for readings with no covering calibration, with `adc_mv` shown alongside kV
+- [ ] `fence_events` rendered as chart annotations — the difference between "something broke here" and "we extended the fence here"
 
-**Exit:** dashboard visibly reflects mock data changes within one polling interval, and the 7d chart looks right against 90 days of backfill — not just against twenty minutes of live mock.
+**Exit:** dashboard visibly reflects mock data changes within one polling interval; the 7d chart looks right against 90 days of backfill rather than twenty minutes of live mock; a backfilled fence extension reads as an annotated step, not an anomaly.
 
 ### Phase D5 — Multi-node & live updates
 - [ ] Grid populated with all mock nodes, one card each
 - [ ] Link-quality indicator (`failed_pub`, `wifi_ms`, `rssi`)
+- [ ] **"Log a change" affordance** writing `fence_events` — a button beats a markdown file nobody updates
+- [ ] Board swaps and calibration changes surfaced on the node detail timeline
 - [ ] Polling-based live updates; WebSocket as stretch goal
 
-**Exit:** 2+ mock nodes visible simultaneously; a silent/down node is visually distinct from the rest.
+**Exit:** 2+ mock nodes visible simultaneously; a silent/down node is visually distinct from the rest; a logged fence change appears on the chart without a deploy.
 
 ### Phase D5.5 — Minimal push alerting
 
@@ -1191,9 +1233,10 @@ Not a config change. The contract is identical, but the *operating conditions*
 are not, and this is where the plan's mock-vs-real assumptions get audited.
 
 **Before hardware arrives:**
-- [ ] Run the full stack against `--cadence realtime` mock nodes for ≥24 h; confirm charts, `silent` timeouts, and alerting all behave at 600 s spacing
-- [ ] Per-node MQTT credentials + Mosquitto ACLs in place (Security section) — before nodes are flashed and deployed, not after
+- [ ] Run the full stack against `--cadence realtime` mock nodes for ≥24 h; confirm charts, `silent` timeouts, and alerting all behave at real spacing — under both the single-interval and split sample/report models
+- [ ] Per-node MQTT credentials + Mosquitto ACLs in place (Security section) — before nodes are flashed and deployed, not after. ACLs are written per `node`, so the location-slug naming has to be settled first
 - [ ] Remote access path decided and working (Tailscale/WireGuard), since off-property visibility is the point of the project
+- [ ] Agree the `node` slug per deployment point and record it — it becomes the topic, the ACL subject, the DB key, and the calibration key, so renaming later is expensive
 
 **Cutover:**
 - [ ] Point real firmware's `MQTT_HOST` config at this broker (dev, then wherever it's deployed)
@@ -1202,10 +1245,13 @@ are not, and this is where the plan's mock-vs-real assumptions get audited.
 - [ ] Retire mock nodes (keep the publisher — it's the test fixture and the CI dependency); mock data is separable by the `mock-` prefix
 
 **Re-tune against reality:**
-- [ ] Confirm `sleep_interval_s` is correct per node and `silent` doesn't false-fire
+- [ ] Confirm `report_interval_s` is correct per node and `silent` doesn't false-fire, including around off-cadence fault transmits
 - [ ] Expect `silent` to be common, not exceptional — weak mesh Wi-Fi is a top-5 project risk and QoS 0 loses messages silently. Tune the threshold against observed loss rate rather than theory
 - [ ] Feed observed `rssi` / `wifi_ms` / `failed_pub` into the antenna-vs-LoRa decision (software plan Connectivity Contingency)
+- [ ] Feed measured sleep current and wake duration back into the [cadence decision](#reporting-cadence-and-alert-latency) — the estimates there are unvalidated until hardware Phase 3 closes, and a high sleep current invalidates the conclusion entirely
 - [ ] After hardware Phase 4: insert the `calibrations` row (with `valid_from` backdated to the node's first reading, so existing history is corrected retroactively) and record the derivation in `docs/calibration.md`
+- [ ] Log a `fence_events` row for the deployment itself, so the node's timeline starts with a known-good marker rather than an unexplained beginning
+- [ ] Begin characterizing seasonal `temp_c` drift against calibration, so compensation can be added later from real data rather than the −2 mV/°C rule of thumb
 
 **Exit:** a real node's reading appears in the dashboard, indistinguishable in shape from mock data; alerting fires correctly at real cadence; a deliberately powered-down node produces a `silent` alert within the expected window.
 
