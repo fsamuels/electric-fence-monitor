@@ -63,7 +63,9 @@ Rationale:
   — deliberately chosen over plain JS for the transferable-skills goal, while
   keeping the backend in the language that's the better functional fit.
 - MQTT/Mosquitto is not really a choice — it's already the firmware's
-  committed transport (`fence/<node-id>/state`, retained messages).
+  committed transport (retained MQTT state messages; the topic key changes
+  from a config'd name to the device's `chip_id` — see
+  [Identity](#identity-devices-locations-and-assignments)).
 
 **Whole-property Home Assistant hub: deferred, not rejected.** The house/farm
 already run a mix of Google-ecosystem devices, smart bulbs/outlets, a Sense
@@ -141,12 +143,16 @@ differs.
 
 ### Data contract (reused, not invented)
 
-Topic: `fence/<node-id>/state`, retained, QoS 0. Payload — the firmware's
-actual message today (see [firmware/README.md](../firmware/README.md)):
+Topic: **`fence/<chip_id>/state`**, retained, QoS 0 — keyed on the device's
+factory-unique hardware id, not on a human-assigned name. See
+[Identity](#identity-devices-locations-and-assignments) for why, and note this
+supersedes the `fence/<node-id>/state` form the firmware publishes today.
+Payload, adapting the firmware's current message (see
+[firmware/README.md](../firmware/README.md)):
 
 ```json
 {
-  "node": "fence-01",
+  "chip_id": "a4c1385f2b10",
   "fw": "0.1.0",
   "kv": 6.93,
   "adc_mv": 1872,
@@ -176,7 +182,7 @@ outside it is a bug signal, not a fence event.
 
 | Field | Type | Unit | Plausible range | Where it comes from | What the dashboard does with it |
 |---|---|---|---|---|---|
-| `node` | string | — | `^[a-z0-9][a-z0-9-]{1,30}$` | `NODE_ID` in per-node `config.h` | Primary key. Routes the reading to a card; also the topic segment it arrived on (the two must agree — see below) |
+| `chip_id` | string | — | `^[0-9a-f]{12}$` | eFuse base MAC, read at runtime — **no config, cannot collide, cannot be mistyped** | Primary key of the *device*. Also the topic segment it arrived on (the two must agree). The fence location it maps to is resolved in the backend, never sent by the node |
 | `fw` | string | — | semver, e.g. `0.1.0` | `FW_VERSION` compile-time constant | Shown on the node detail; lets you spot a node that missed an OTA rollout. Stored per reading, so a bad release is attributable after the fact |
 | `kv` | float | kV | 0–12 | `adc_mv × CAL_KV_PER_MV + CAL_KV_OFFSET`, computed on-device | **Advisory only.** The node uses it to decide whether a reading warrants an immediate transmit; the backend recomputes kV from `adc_mv` and is authoritative for display and alerting — see [Calibration](#calibration) |
 | `adc_mv` | int | mV | 0–3300 | Max of a 2.5 s multi-sample burst on the peak-detector output | **The measurement of record.** Everything downstream derives kV from this at query time, so recalibration repairs all history retroactively instead of leaving a discontinuity. Also what's displayed when no calibration covers the reading |
@@ -197,84 +203,109 @@ per-message deltas**, and both reset on power loss. Chart them as rates
 (difference between consecutive readings) rather than raw values, and treat a
 decrease as a reset event rather than clamping it to zero.
 
-#### Node identity — `node` is a *location*, not a board
+#### Identity: devices, locations, and assignments
 
-Worth settling before nodes 2–5 exist, because it's painful to change once
+Worth settling before nodes 2–5 exist, because it is painful to change once
 history has accumulated under the wrong scheme.
 
-There are two different identities here and the current design conflates them:
+There are two distinct identities, and the original design conflated them:
 
-- **Deployment identity** — *which point on the fence line is this?*
-- **Device identity** — *which physical ESP32 is this?*
+- **Device** — *which physical ESP32 is this?*
+- **Location** — *which point on the fence line is this?*
 
-They have different lifecycles, and one identifier can't serve both:
+They have different lifecycles, and no single identifier can serve both:
 
 - Swap a failed board at the north gate → device changes, location doesn't.
-  You want that location's history to continue uninterrupted.
+  That location's history must continue uninterrupted.
 - Move a working board from the north gate to the creek crossing → device is
-  the same, location changed. You emphatically do *not* want the history to
-  continue as though it's the same measurement point.
+  the same, location changed. Its history must **not** continue as though it
+  were the same measurement point.
 
-Whichever one you pick as the single id, one of those two routine operations
-silently corrupts the record. And the secondary project goal —
-fault localization by comparing voltage across points — is inherently about
-*locations*, so location has to be the thing the data is keyed on.
+Pick either one as *the* id and one of those two routine operations silently
+corrupts the record. So the model carries all three: two identities plus the
+time-varying relationship between them.
 
-**Scheme:**
+**The device names itself; the backend names the fence.**
 
-| | Value | Assigned by | Stable across |
+| | Value | Assigned by | Lives in |
 |---|---|---|---|
-| `node` (topic segment, DB key, display) | Human-readable location slug: `north-gate`, `creek-crossing`, or `fence-01` if you prefer numbering | Human, in `config.h` | Board swaps |
-| `chip_id` (new payload field) | Low 6 bytes of `ESP.getEfuseMac()`, hex | Factory eFuse — no config, cannot collide | Everything; it *is* the board |
-| MQTT **client id** | `<node>-<chip_id suffix>` | Derived at runtime | — |
+| `chip_id` | eFuse base MAC, 12 lowercase hex chars | Espressif, at manufacture | The silicon |
+| `location_id` | Human-readable slug: `north-gate`, `creek-crossing` | You | The database |
+| assignment | `(chip_id → location_id)` over a validity window | You, via the dashboard | The database |
 
-Human-readable wins for `node` because it's the thing you'll read in topic
-strings while debugging (`mosquitto_sub -t 'fence/north-gate/state'`), in
-Mosquitto ACL files, in the dashboard, and in `docs/calibration.md`. A UUID or
-bare MAC is collision-proof but turns every one of those into a lookup.
+The firmware knows only its `chip_id`, which it reads from eFuse at runtime.
+**There is no node name in `config.h` and no name in the payload.** Moving
+hardware between fence points is a UI action against `node_assignments` — no
+reflash, no config edit, no site visit beyond physically moving the box.
 
-Adding `chip_id` costs one field and buys three things:
+This is the same versioned-mapping pattern used for
+[calibration](#calibration): readings store the immutable fact (*this device
+measured this value at this time*), and the interpretation (*which fence that
+was*) resolves at query time from the assignment valid at the reading's
+timestamp. Both directions stay correct — the location's timeline continues
+across a board swap, and a relocated board's old readings stay attributed to
+where they were actually taken.
 
-1. **Detects a duplicate `node`** — two boards flashed with the same
-   `config.h` produce interleaved readings under one id, which otherwise looks
-   like an erratic fence rather than an inventory mistake.
-2. **Records board swaps** — same `node`, new `chip_id` is a real event: the
-   location's history continues, and the swap is visible on the timeline where
-   it belongs.
-3. **Fixes the client-id collision structurally.** The firmware currently uses
-   `NODE_ID` as its MQTT client id, so two nodes sharing an id evict each
-   other in a reconnect loop. Client id derived from the chip is unique by
-   construction, while the topic stays location-stable. Both problems, one
-   change.
+**What this buys, beyond what a name-in-config scheme could:**
 
-**Constraints on the `node` string**, since it's simultaneously a topic
-segment, part of a client id, and a database key:
+1. **Relocation without reflashing.** The point of the exercise.
+2. **ACLs pre-provision at flash time.** You know a board's MAC before it's
+   deployed, and it never changes — so the per-device Mosquitto credential and
+   its topic ACL are written once and survive every move. With location-based
+   topics, every relocation is also an ACL edit.
+3. **Identity cannot be mistyped or duplicated.** No two boards can share a
+   `chip_id`, so the duplicate-config failure mode disappears rather than
+   needing detection.
+4. **The MQTT client-id collision disappears too** — client id derives from
+   `chip_id`, unique by construction.
+5. **Zero-config provisioning.** Flash identical firmware to every board.
+   A new device publishing under an unrecognized `chip_id` appears in the
+   dashboard as **unassigned**, and you bind it to a location in the UI. That
+   is the whole per-node identity setup.
 
-- No `/`, `+`, `#`, whitespace, or non-ASCII — `/` and the wildcards would
-  break topic routing outright.
-- Lowercase kebab-case, 2–31 chars: `^[a-z0-9][a-z0-9-]{1,30}$`. Enforced in
-  the contract schema and rejected at ingest rather than auto-creating a
-  phantom node.
-- Keep it short. The MQTT spec only guarantees 23-character client ids;
-  Mosquitto is more permissive, but there's no reason to test it.
-- The firmware builds the topic into a fixed `char topic[64]` via `snprintf`,
-  which truncates *silently* — a long id would publish to a subtly wrong
-  topic. The 31-char cap leaves ample headroom, and a compile-time
-  `static_assert` on `sizeof(NODE_ID)` makes it impossible to get wrong.
+**The cost, stated honestly:** topics are opaque. `fence/a4c1385f2b10/state`
+is worse than `fence/north-gate/state` at a `mosquitto_sub` prompt or in a
+hand-read ACL file. Mitigations: the firmware prints its `chip_id` on the
+serial console at boot, `esptool.py read_mac` reads it over USB without
+flashing, and the ACL file is generated rather than hand-written. For a
+five-node fleet you look it up once. It remains a real daily-ergonomics tax
+and is the reason this decision deserved to be made explicitly.
 
-**Ingest must verify `node` matches the topic it arrived on.** They're
-independent inputs — the firmware could publish `{"node": "north-gate"}` to
-`fence/creek-crossing/state` after a partial config edit. Mismatch is a
-misconfiguration, not a reading; reject it loudly.
+**On the eFuse MAC.** The classic ESP32 (WROOM-32) has no 128-bit unique ID —
+that's an ESP32-S2/S3/C3 feature — so the factory-burned 48-bit base MAC is
+*the* hardware identity. It's readable before Wi-Fi comes up, which matters:
+a wake cycle that never associates still knows who it is. Store all 48 bits;
+Espressif OUI prefixes repeat across a production batch, so truncating throws
+away exactly the bytes that carry the entropy.
 
-**Calibration keys on the pair, not on `node` alone.** The calibration
-constant is a physical property of a specific divider chain *and* a specific
-board's ADC. The hand-wired HV chain stays at the fence while the board is
-swappable, so `docs/calibration.md` records `(node, chip_id, date)` and any
-board swap invalidates the constant until re-verified against the handheld
-tester. Recording it against `node` alone would silently carry a stale
-constant onto new hardware — producing wrong-but-plausible kV, the exact
-failure mode the provisional-reading treatment exists to prevent.
+> **Implementation trap.** Arduino's `ESP.getEfuseMac()` returns a `uint64_t`
+> with bytes in **reverse order** relative to the string `WiFi.macAddress()`
+> prints. Formatted naively, the resulting id won't match the MAC in the
+> router's DHCP table or on `esptool.py read_mac`. Pin the byte order in
+> `contract/fence-state.schema.json` with a worked example and verify it on
+> first hardware — this is cheap to get right once and expensive to discover
+> after history has accumulated under two different formats.
+
+**Ingest verifies payload `chip_id` against the topic segment.** They come
+from the same source on-device so they can't disagree by misconfiguration, but
+a broken bridge or a misrouting gateway can make them disagree, and that's
+worth catching loudly rather than storing.
+
+**Calibration keys on the assignment, not on either id alone.** The constant
+is a physical property of a specific board's ADC *and* the specific divider
+and peak detector it's wired to — and the diode dominates the error budget.
+The hand-wired HV chain stays at the fence while the board is swappable, so a
+board that moves is paired with a *different* chain and must be recalibrated.
+`(chip_id, location_id, valid_from)` is therefore the key, which is exactly
+the assignment. See [Calibration](#calibration).
+
+**What `chip_id` cannot tell you.** It identifies the ESP32 module only.
+Because the PCB plan sockets the DevKit, the module is swappable independently
+of the peak detector, the divider, and the enclosure — so a diode replacement
+or a rewired divider invalidates calibration with no detectable identity
+change. Automatic detection covers one of the three things that invalidate a
+calibration; the other two must be logged manually as `fence_events`. That's
+a limitation of any hardware id, not an argument against having one.
 
 #### Reserved optional fields — add to the contract now
 
@@ -285,11 +316,13 @@ status derivation, and the charts all sit on:
 | Field | Type | Meaning | Ingest behavior when absent |
 |---|---|---|---|
 | `ts` | int (epoch seconds, UTC) | When the node *took* the reading | Fall back to receipt time |
-| `seq` | int | Monotonic per-node reading counter | Fall back to `(node, boot)` |
-| `report_interval_s` | int | How often this node sends a routine heartbeat | Fall back to configured per-node default |
-| `sample_interval_s` | int | How often this node reads the fence | Assume equal to `report_interval_s` |
-| `chip_id` | string (hex) | Device identity from the ESP32 eFuse MAC | Board swaps and duplicate-`node` detection unavailable; see [Node identity](#node-identity--node-is-a-location-not-a-board) |
+| `seq` | int | Monotonic per-device reading counter | Fall back to `(chip_id, boot)` |
+| `report_interval_s` | int | How often this device sends a routine heartbeat | Fall back to configured per-device default |
+| `sample_interval_s` | int | How often this device reads the fence | Assume equal to `report_interval_s` |
 | `temp_c` | float | Enclosure temperature | No temperature compensation of the peak-detector diode drift; see [Calibration](#calibration) |
+
+(`chip_id` is **required**, not reserved — it's the topic key and the device's
+primary identity. See [Identity](#identity-devices-locations-and-assignments).)
 
 `ts` matters more than it looks. Software plan Phase 4 already commits to
 buffering readings in RTC memory across failed transmits and flushing on
@@ -356,27 +389,56 @@ weak mesh Wi-Fi that is already a named project risk. Two implications:
 
 ### Storage
 
-`nodes` table: `node_id` (PK), `first_seen`, `fw_version`, `chip_id`,
-`report_interval_s`, `sample_interval_s`. Note there is no `calibrated` boolean — whether a node is
-calibrated is derived from whether a `calibrations` row covers the reading's
-timestamp, which is strictly more informative.
+Three tables carry identity, and the split follows directly from
+[Identity](#identity-devices-locations-and-assignments): store immutable facts,
+resolve interpretation at query time.
 
-`calibrations` table: `node_id`, `chip_id`, `valid_from`, `valid_to`,
+`devices` table: `chip_id` (PK), `first_seen`, `fw_version`,
+`report_interval_s`, `sample_interval_s`. One row per physical ESP32, created
+automatically the first time an unrecognized `chip_id` publishes.
+
+`locations` table: `location_id` (PK — human-readable slug,
+`^[a-z0-9][a-z0-9-]{1,30}$`), `label`, `notes`, `created_at`. One row per
+monitored point on the fence line. **Created by a human in the dashboard, never
+by ingest** — a location is a deliberate decision about the property, not
+something a stray MQTT message should be able to invent.
+
+`node_assignments` table: `chip_id`, `location_id`, `valid_from`, `valid_to`
+(null = current). The time-varying mapping between the two. Constraints worth
+enforcing in the schema rather than hoping for: **no overlapping windows for a
+given `chip_id`** (one board can't be in two places) and **none for a given
+`location_id`** (two boards at one point would silently interleave readings).
+Moving hardware closes one row and opens another; that's the entire operation.
+
+`calibrations` table: `chip_id`, `location_id`, `valid_from`, `valid_to`,
 `kv_per_mv`, `kv_offset`, `method`, `points` (JSON — the raw measurement pairs,
-kept so the fit can be redone), `notes`. Versioned rather than mutated, so a
-reading is always converted with the constants that were valid when it was
-taken. This is what makes `kv` a **query-time computation over stored
-`adc_mv`** rather than a value frozen on the device — see
-[Calibration](#calibration) for why that's the whole point.
-`docs/calibration.md` stays the human-readable record; this table is what the
-API reads.
+kept so the fit can be redone), `notes`. Keyed on the *assignment*, because the
+constant depends on both the board's ADC and the divider chain it's wired to.
+Versioned rather than mutated, so a reading is always converted with the
+constants valid when it was taken. This is what makes `kv` a **query-time
+computation over stored `adc_mv`** rather than a value frozen on the device —
+see [Calibration](#calibration). `docs/calibration.md` stays the
+human-readable record; this table is what the API reads.
 
-`fence_events` table: `ts`, `node_id` (nullable — some events are
-property-wide), `kind`, `note`. Operator-annotated timeline of deliberate
-physical changes: wire added or removed, charger changed, vegetation cleared,
-grounding modified, board swapped, recalibrated. Without it, every intentional
-change is indistinguishable from a developing fault for the rest of the
-node's life.
+`fence_events` table: `ts`, `location_id` (nullable — some events are
+property-wide), `chip_id` (nullable — some are device-specific), `kind`,
+`note`. Operator-annotated timeline of deliberate physical changes: wire added
+or removed, charger changed, vegetation cleared, grounding modified, board
+swapped, recalibrated. Without it, every intentional change is
+indistinguishable from a developing fault for the rest of that location's life.
+
+`readings` hypertable (Timescale): **`chip_id`**, `ts`, `adc_mv`, `batt_v`,
+`rssi`, `boot`, `failed_pub`, `wifi_ms`, `fw`, `temp_c`, plus the advisory
+on-device `kv`. One row per received *live* message (retained messages
+excluded — see the data contract above).
+
+**Readings key on the device, not the location**, which is the crux of the
+whole scheme. "This board measured 1872 mV at this instant" is an immutable
+fact. "That was the north gate" and "that means 6.93 kV" are both
+interpretations, resolved at read time by joining to the assignment and the
+calibration whose windows cover the reading's `ts`. Get this backwards —
+stamping `location_id` onto rows at ingest — and relocating a board either
+rewrites history or forks it.
 
 **No `last_seen` column.** It would be a denormalized copy of
 `max(readings.ts)` needing an update on every insert, and the two will diverge
@@ -386,9 +448,14 @@ whenever OTA (software plan Phase 4) ships, so it's an upsert-on-change
 convenience field, not authoritative history — the authoritative record is the
 `fw` value on each reading.
 
-`readings` hypertable (Timescale): `node_id`, `ts`, `kv`, `adc_mv`, `batt_v`,
-`rssi`, `boot`, `failed_pub`, `wifi_ms`, `fw`. One row per received *live*
-message (retained messages excluded — see the data contract above).
+**Two states that look alike and aren't:**
+
+- A **device with no current assignment** is *unassigned* — freshly flashed,
+  or pulled from service. It's reporting fine; it just isn't attributed to a
+  fence yet. This is the provisioning inbox, not a fault.
+- A **location with no current assignment** is *unmonitored* — a fence point
+  nobody is watching. Distinct from `silent`, which means an assigned device
+  has stopped reporting. Both deserve surfacing; only one is an alert.
 
 Two specifics worth writing down before they bite:
 
@@ -400,10 +467,12 @@ Two specifics worth writing down before they bite:
   the same migration that creates the table, before any rows exist —
   converting a populated table is a separate and more annoying path.
 
-Unknown-node policy: a message from an unrecognized `node` id auto-creates a
-`nodes` row. This is what makes onboarding nodes 2–5 a pure config change, but
-it also means a typo'd `NODE_ID` silently creates a phantom node rather than
-erroring — an accepted trade, noted so it isn't a surprise during D6.
+Unknown-device policy: a message from an unrecognized `chip_id` auto-creates a
+`devices` row in the **unassigned** state. That is the provisioning inbox, not
+an error — flash a board, power it on, and it shows up waiting to be bound to
+a location. Because `chip_id` comes from eFuse rather than config, the old
+failure mode of a typo'd id creating a phantom node is gone entirely.
+Locations are never auto-created.
 
 #### Retention and rollups
 
@@ -435,7 +504,8 @@ differ per node/season):
 | `ok` | `kv` ≥ low threshold (default 5 kV) |
 | `low` | `kv` < low threshold for N consecutive readings (default 2–3) |
 | `down` | `kv` < down floor (default 1 kV) or pinned at zero |
-| `silent` | no reading for > 2–3× **that node's** `report_interval_s` (never the sample interval, and never a global constant — see data contract) |
+| `silent` | assigned device has sent no reading for > 2–3× **its own** `report_interval_s` (never the sample interval, never a global constant — see data contract) |
+| `unmonitored` | location has no currently assigned device — not a fault, but not being watched either |
 
 **Implement this as a pure function** — `derive_status(readings, thresholds,
 node) -> Status` — with no I/O and no framework coupling. It has to be
@@ -457,7 +527,7 @@ the difference is worth understanding before D5.5 rather than during it:
   2 a.m. is noticed at 8 a.m. when someone opens the tab) and a memory of what
   was already announced, so it doesn't re-page every evaluation cycle.
 
-So D5.5 adds a scheduler and a `status_transitions` table (`node_id`, `ts`,
+So D5.5 adds a scheduler and a `status_transitions` table (`location_id`, `ts`,
 `from_status`, `to_status`, `notified_at`). That's an addition, not a
 rewrite — provided the status logic is the pure function described above.
 Noted here so the D3 design leaves room for it.
@@ -472,16 +542,18 @@ is itself the alert.
 `failed_pub` and `wifi_ms` are in the payload specifically to inform the
 antenna-vs-LoRa decision (software plan Connectivity Contingency), and
 `rssi` feeds the same call. Surfacing them is nearly free once they're stored:
-a "flaky link" indicator on the node card — rising `failed_pub`, `wifi_ms`
+a "flaky link" indicator on the location card — rising `failed_pub`, `wifi_ms`
 trending up, `rssi` weak — turns a real engineering decision into an
 observation instead of a field trip. This is separate from fence status and
 shouldn't be folded into the status badge.
 
 ### API surface (initial)
 
-- `GET /nodes` — all nodes, each with latest reading + derived status
-- `GET /nodes/{id}` — node detail + latest reading
-- `GET /nodes/{id}/readings?since=&bucket=` — time series for the chart.
+- `GET /locations` — all monitored fence points, each with its currently assigned device, latest reading + derived status
+- `GET /locations/{id}` — location detail, current and past assignments, latest reading
+- `GET /locations/{id}/readings?since=&bucket=` — time series for the chart, stitched across whatever devices were assigned during the range.
+- `GET /devices` — every known board, including **unassigned** ones awaiting provisioning
+- `POST /assignments` / `PATCH /assignments/{id}` — bind a device to a location, or close an assignment when hardware moves. This is how hardware gets relocated; there is no firmware step
   **`bucket` (server-side downsampling) is part of the initial design, not an
   optimization to add later.** A season of 5-node history is ~1.3M points and
   no chart library should receive that; `time_bucket` collapses it to whatever
@@ -503,7 +575,7 @@ class of bug.
 
 ### Frontend
 
-Per-node card: status badge (color-coded per table above), current kV as a
+Per-location card: status badge (color-coded per table above), current kV as a
 large number, voltage-over-time line chart via Recharts, secondary stats
 (battery, RSSI, last seen, link quality).
 
@@ -580,16 +652,20 @@ arrives that way.
 
 #### Coexistence with real nodes
 
-The firmware uses `NODE_ID` as its MQTT **client id**
+The firmware today uses `NODE_ID` as its MQTT **client id**
 (`mqtt.connect(NODE_ID)`). Two clients presenting the same id make the broker
 evict one on each connect, producing an endless reconnect loop that is
-genuinely confusing to diagnose. Since D6 has mock and real nodes live at the
+genuinely confusing to diagnose. Deriving the client id from `chip_id` removes
+that failure mode for real hardware, but mock publishers still have to pick
+ids that can't collide with it. Since D6 has mock and real devices live at the
 same time:
 
-- Mock publisher uses distinct client ids (`mock-pub-<n>`), never a bare node id.
-- Mock nodes are namespaced `mock-01`…`mock-05`, so `fence-01` is
-  unambiguously the real hardware and mock data is trivially separable in the
-  database afterward.
+- Mock devices use reserved `chip_id` values from a range real Espressif
+  silicon never uses — the locally-administered bit set, e.g. `fe0000000001`
+  through `fe0000000005`. Real hardware is then unambiguously identifiable, and
+  mock data stays trivially separable in the database afterward.
+- Mock client ids derive from those chip ids exactly as real firmware does, so
+  the collision behavior under test is the real one.
 
 ---
 
@@ -812,7 +888,7 @@ This is the important architectural call, and the plan already accidentally
 set it up correctly.
 
 `adc_mv` is stored raw on every reading. That means **kV can be computed at
-query time from a per-node calibration record in the database**, rather than
+query time from a versioned per-assignment calibration record in the database**, rather than
 being baked in on-device. The consequences are large:
 
 - **Recalibration is a database update.** No site visit, no reflash, no OTA.
@@ -829,13 +905,13 @@ transmit (see [Reporting cadence](#reporting-cadence-and-alert-latency)). The
 on-device constant can be coarse. **The backend's value is authoritative for
 display and alerting**; the payload's `kv` is advisory.
 
-Storage: a `calibrations` table — `node_id`, `chip_id`, `valid_from`,
+Storage: a `calibrations` table — `chip_id`, `location_id`, `valid_from`,
 `valid_to`, `kv_per_mv`, `kv_offset`, `method`, `points` (the raw measurement
 pairs), `notes`. `docs/calibration.md` remains the human-readable record;
 this table is what the API actually reads.
 
 The on-device constant should still be updatable without a reflash — NVS plus
-a retained `fence/<node>/config` topic — because a node whose local threshold
+a retained `fence/<chip_id>/config` topic — because a node whose local threshold
 is badly wrong will either spam immediate-transmits or fail to send them. But
 that's a coarse safety setting, not the measurement path.
 
@@ -883,7 +959,8 @@ What *does* need to happen is **re-baselining**, and it's easy to overlook:
   comparative pattern the Phase 7 fault localization depends on.
 
 So the plan needs an operator-annotated event timeline — a `fence_events`
-table: `ts`, `node_id` (nullable for property-wide events), `kind`, `note`.
+table: `ts`, `location_id` (nullable for property-wide events), `chip_id`
+(nullable), `kind`, `note`.
 Kinds: wire added or removed, charger changed or serviced, vegetation cleared,
 grounding modified, board swapped, recalibrated.
 
@@ -944,19 +1021,32 @@ Absent from the first draft of this plan, and one half of it must be settled
 
 `config.example.h` currently ships `MQTT_USER ""` with "leave empty for
 anonymous," and an unauthenticated broker means anyone on the ranch network
-can publish `fence/fence-01/state` claiming a healthy 6.9 kV. For a system
+can publish to a node's state topic claiming a healthy 6.9 kV. For a system
 whose entire purpose is reporting that the fence is *not* fine, a spoofable
 "everything's fine" is the worst available failure mode — strictly worse than
 the dashboard being down, which is at least visibly broken.
 
-- Per-node MQTT credentials, not one shared account.
-- Mosquitto ACL restricting each node to publishing only its own
-  `fence/<its-id>/state`; ingest gets a separate read-only account subscribed
-  to `fence/+/state`.
+- Per-device MQTT credentials, not one shared account.
+- Mosquitto ACL restricting each device to publishing only
+  `fence/<its-chip_id>/state`; ingest gets a separate read-only account
+  subscribed to `fence/+/state`.
 - `allow_anonymous false` once credentials exist.
 
-The timing matters: this is a `config.h` change plus a reflash. Cheap while
-one bench node exists, a walk to every fence post afterward.
+**Chip-keyed topics make this materially easier**, which is a real secondary
+benefit of the [identity decision](#identity-devices-locations-and-assignments).
+The ACL subject is the device's factory-fixed MAC, so:
+
+- Credentials and ACL entries are **generated at flash time from a known,
+  permanent id** — before the board ever leaves the bench.
+- They **never change when hardware moves.** Under location-keyed topics,
+  every relocation would also be an ACL edit and a broker reload; here the
+  assignment change is purely a database row.
+- The ACL file is generated from the `devices` table rather than hand-written,
+  which also removes the readability objection to opaque topic strings.
+
+The timing still matters: credentials are a `config.h` change plus a reflash.
+Cheap while one bench node exists, a walk to every fence post afterward — so
+this lands before deployment, not after.
 
 ### API and frontend
 
@@ -1031,9 +1121,9 @@ indistinguishable" true as fields get added.
 - **Ingest edge cases**, each of which is a real thing the broker will hand
   it: retained flag set (must not insert), malformed JSON, missing required
   field, unexpected extra field (must not crash — the firmware will add
-  fields), wrong types, unknown node id, duplicate `(node, boot)`, node id
-  failing the slug pattern, payload `node` disagreeing with the topic, and a
-  changed `chip_id` on a known node.
+  fields), wrong types, duplicate `(chip_id, boot)`, a `chip_id` failing the
+  12-hex-char pattern, and a payload `chip_id` disagreeing with the topic
+  segment.
 - **Calibration application**, which is where a subtle error would silently
   corrupt every displayed number: a reading converts using the constants valid
   at its own `ts` rather than the newest ones; a backdated calibration row
@@ -1096,7 +1186,9 @@ dashboard/
       status.py              derive_status(): pure function, no I/O
       models.py              SQLAlchemy models (Timescale hypertable)
       db.py
-      routers/nodes.py
+      routers/locations.py
+      routers/devices.py       Includes the unassigned-device inbox
+      routers/assignments.py   Bind / move / retire hardware
       routers/calibrations.py  Versioned constants; kV is computed here,
                                not read from the payload
       routers/events.py        fence_events read + write
@@ -1117,14 +1209,16 @@ dashboard/
         schema.ts            GENERATED from OpenAPI — do not hand-edit
         client.ts
       components/
-        NodeCard.tsx
+        LocationCard.tsx    One monitored fence point
+        DeviceInbox.tsx     Unassigned boards awaiting a location
+        AssignmentDialog.tsx Bind or move hardware
         VoltageChart.tsx
         StatusBadge.tsx
         LinkQuality.tsx      failed_pub / wifi_ms / rssi — feeds the
                              antenna-vs-LoRa decision
         EventAnnotations.tsx fence_events markers overlaid on charts
         LogChangeDialog.tsx  Operator records a physical change
-      pages/Dashboard.tsx    Node grid from D4 onward (one card, then many)
+      pages/Dashboard.tsx    Location grid from D4 onward (one card, then many)
     Dockerfile
     package.json
 ```
@@ -1161,12 +1255,13 @@ firmware is the other party to it.
 - [ ] MQTT ingest subscriber (`fence/+/state`) in its own container, validating against the contract schema
 - [ ] **Retained-message handling: retained → update last-known state, never insert a reading**
 - [ ] Optional `ts` / `seq` / `report_interval_s` / `sample_interval_s` / `chip_id` / `temp_c` honored when present, sensible fallbacks when absent
-- [ ] **Node identity checks**: `node` matches `^[a-z0-9][a-z0-9-]{1,30}$`; payload `node` agrees with the topic it arrived on (mismatch is a misconfiguration — reject loudly, don't store)
-- [ ] **`chip_id` change on a known node raises a board-swap `fence_events` row automatically**; two chip ids interleaving under one `node` is a duplicate-config error, not an erratic fence — surface it as such
+- [ ] `devices` / `locations` / `node_assignments` tables, with **non-overlapping validity windows enforced in the schema** for both `chip_id` and `location_id`
+- [ ] **Identity checks at ingest**: `chip_id` matches `^[0-9a-f]{12}$` and agrees with the topic segment; unrecognized devices auto-create as *unassigned*; locations never auto-create
+- [ ] Assignment change raises a `fence_events` row automatically — board swaps and relocations both land on the timeline
 - [ ] Continuous aggregate (hourly + daily), compression policy, retention policy
-- [ ] Ingest edge-case tests: malformed, missing field, extra field, unknown node, retained replay, bad node id, topic/payload mismatch, chip id change
+- [ ] Ingest edge-case tests: malformed, missing field, extra field, retained replay, malformed `chip_id`, topic/payload mismatch, reading from an unassigned device, overlapping assignment windows rejected
 
-**Exit:** manually publishing one MQTT message produces exactly one row; restarting the ingest container ten times produces **zero** additional rows; publishing under a changed `chip_id` produces a board-swap event rather than a silent overwrite.
+**Exit:** manually publishing one MQTT message produces exactly one row; restarting the ingest container ten times produces **zero** additional rows; a message from an unknown `chip_id` lands in the unassigned inbox rather than erroring or inventing a location.
 
 ### Phase D2 — Mock publisher
 - [ ] Normal-operation scenario for one simulated node, live mode at accelerated cadence
@@ -1174,15 +1269,15 @@ firmware is the other party to it.
 - [ ] `--cadence realtime` option, covering both the current 600 s single-interval model and the recommended 60 s sample / 900 s report split
 - [ ] **Report-by-exception simulation**: routine heartbeats *plus* immediate off-cadence transmits on threshold crossings, so irregular arrival spacing is exercised before real firmware produces it
 - [ ] **Backfill mode**: N days of history at real spacing, written directly to the DB, including plausible `fence_events` rows to annotate against
-- [ ] Emit `chip_id` and `temp_c`; a **board-swap scenario** (same `node`, new `chip_id`) and an **uncalibrated scenario** (no `calibrations` row covering the readings)
-- [ ] Distinct client ids (`mock-pub-<n>`) and namespaced node ids (`mock-01`…)
+- [ ] Emit `temp_c`; a **board-swap scenario** (assignment closed and reopened at one location with a different `chip_id`), a **relocation scenario** (one `chip_id` moved between locations), and an **uncalibrated scenario** (no `calibrations` row covering the readings)
+- [ ] Reserved mock `chip_id` range (locally-administered bit set, e.g. `fe0000000001`…) so mock and real hardware never collide and mock rows stay separable
 - [ ] Contract test: every scenario's payload validates against `contract/fence-state.schema.json`
 
 **Exit:** DB fills with plausible time series across every scenario on demand; `--backfill 90d` produces a season of realistically-spaced history in seconds; a fault transmit arriving between heartbeats is stored and charted correctly rather than treated as a gap.
 
 ### Phase D3 — API
-- [ ] `GET /nodes`, `GET /nodes/{id}`, `GET /nodes/{id}/readings?since=&bucket=`
-- [ ] **kV computed at query time** by joining each reading to the `calibrations` row whose validity window covers its `ts` — never read from the payload's advisory `kv`
+- [ ] `GET /locations`, `GET /locations/{id}`, `GET /locations/{id}/readings?since=&bucket=`, `GET /devices`, assignment write endpoints
+- [ ] **kV and location both resolved at query time** by joining each reading to the `node_assignments` and `calibrations` rows whose validity windows cover its `ts` — never read from the payload's advisory `kv`, never from a location stamped at ingest
 - [ ] Readings with no covering calibration returned as **provisional**, carrying `adc_mv` and an explicit flag rather than a plausible-looking number
 - [ ] `GET`/`POST /fence-events` — read for chart annotation, write for the "log a change" affordance
 - [ ] `derive_status()` as a pure, I/O-free function per the thresholds table above
@@ -1190,10 +1285,10 @@ firmware is the other party to it.
 - [ ] Table-driven status tests across every scenario and boundary condition, including irregular arrival from off-cadence fault transmits
 - [ ] Retroactive-recalibration test: inserting a backdated `calibrations` row changes historical kV **without touching `readings`**
 
-**Exit:** API returns the correct derived status for each mock scenario, and the same status for a node whether it's running at 10 s or 900 s cadence; adding a calibration row retroactively corrects a node's entire history in one write.
+**Exit:** API returns the correct derived status for each mock scenario, and the same status for a device whether it's running at 10 s or 900 s cadence; adding a calibration row retroactively corrects history in one write; relocating a device in the assignment table leaves its prior readings attributed to the prior location.
 
 ### Phase D4 — Frontend MVP
-- [ ] Node grid shell rendering a single `NodeCard`: status badge, current kV, voltage-over-time chart
+- [ ] Location grid shell rendering a single `LocationCard`: status badge, current kV, voltage-over-time chart
 - [ ] Chart ranges 24h/7d/30d/season with server-side bucketing, validated against backfilled data
 - [ ] Provisional presentation for readings with no covering calibration, with `adc_mv` shown alongside kV
 - [ ] `fence_events` rendered as chart annotations — the difference between "something broke here" and "we extended the fence here"
@@ -1201,13 +1296,14 @@ firmware is the other party to it.
 **Exit:** dashboard visibly reflects mock data changes within one polling interval; the 7d chart looks right against 90 days of backfill rather than twenty minutes of live mock; a backfilled fence extension reads as an annotated step, not an anomaly.
 
 ### Phase D5 — Multi-node & live updates
-- [ ] Grid populated with all mock nodes, one card each
+- [ ] Grid populated with all monitored locations, one card each
+- [ ] **Unassigned-device inbox** and the assignment dialog — the provisioning and relocation flow, and the reason no name lives in firmware
 - [ ] Link-quality indicator (`failed_pub`, `wifi_ms`, `rssi`)
 - [ ] **"Log a change" affordance** writing `fence_events` — a button beats a markdown file nobody updates
 - [ ] Board swaps and calibration changes surfaced on the node detail timeline
 - [ ] Polling-based live updates; WebSocket as stretch goal
 
-**Exit:** 2+ mock nodes visible simultaneously; a silent/down node is visually distinct from the rest; a logged fence change appears on the chart without a deploy.
+**Exit:** 2+ monitored locations visible simultaneously; a silent/down location is visually distinct from the rest; an unassigned device appears in the inbox rather than as a broken card; a logged fence change appears on the chart without a deploy.
 
 ### Phase D5.5 — Minimal push alerting
 
@@ -1218,8 +1314,8 @@ end of a distant phase, the realistic outcome is a good-looking dashboard that
 never actually pages anyone — the failure mode this project exists to prevent.
 Once D3's status derivation exists, this is small.
 
-- [ ] `status_transitions` table (`node_id`, `ts`, `from_status`, `to_status`, `notified_at`)
-- [ ] Scheduler evaluating `derive_status()` per node on an interval — the observer a stateless API doesn't provide
+- [ ] `status_transitions` table (`location_id`, `ts`, `from_status`, `to_status`, `notified_at`)
+- [ ] Scheduler evaluating `derive_status()` per location on an interval — the observer a stateless API doesn't provide
 - [ ] Edge-triggered dispatch with de-duplication: notify on transition, not on every evaluation
 - [ ] One delivery channel (ntfy or Pushover), severity split: `low` vs. `down` vs. `silent`
 - [ ] **Dead-man's switch**: scheduler pings an external service, conditioned on ingest health
@@ -1234,13 +1330,13 @@ are not, and this is where the plan's mock-vs-real assumptions get audited.
 
 **Before hardware arrives:**
 - [ ] Run the full stack against `--cadence realtime` mock nodes for ≥24 h; confirm charts, `silent` timeouts, and alerting all behave at real spacing — under both the single-interval and split sample/report models
-- [ ] Per-node MQTT credentials + Mosquitto ACLs in place (Security section) — before nodes are flashed and deployed, not after. ACLs are written per `node`, so the location-slug naming has to be settled first
+- [ ] Per-device MQTT credentials + Mosquitto ACLs generated from each board's `chip_id` — before nodes are flashed and deployed, not after. Because the id is factory-fixed, these are written once and survive every relocation
 - [ ] Remote access path decided and working (Tailscale/WireGuard), since off-property visibility is the point of the project
-- [ ] Agree the `node` slug per deployment point and record it — it becomes the topic, the ACL subject, the DB key, and the calibration key, so renaming later is expensive
+- [ ] Record each board's `chip_id` at flash time (serial console, or `esptool.py read_mac` over USB) — it's the ACL subject and the provisioning key
 
 **Cutover:**
 - [ ] Point real firmware's `MQTT_HOST` config at this broker (dev, then wherever it's deployed)
-- [ ] Confirm no client-id collision: real node is `fence-01`, mock publishers are `mock-pub-<n>`
+- [ ] Confirm no client-id collision: real hardware uses its eFuse MAC, mock devices use the reserved `fe00…` range
 - [ ] Leave the real node with no `calibrations` row until hardware Phase 4 completes; expect wrong-but-plausible kV and read `adc_mv` in the meantime
 - [ ] Retire mock nodes (keep the publisher — it's the test fixture and the CI dependency); mock data is separable by the `mock-` prefix
 
@@ -1250,7 +1346,7 @@ are not, and this is where the plan's mock-vs-real assumptions get audited.
 - [ ] Feed observed `rssi` / `wifi_ms` / `failed_pub` into the antenna-vs-LoRa decision (software plan Connectivity Contingency)
 - [ ] Feed measured sleep current and wake duration back into the [cadence decision](#reporting-cadence-and-alert-latency) — the estimates there are unvalidated until hardware Phase 3 closes, and a high sleep current invalidates the conclusion entirely
 - [ ] After hardware Phase 4: insert the `calibrations` row (with `valid_from` backdated to the node's first reading, so existing history is corrected retroactively) and record the derivation in `docs/calibration.md`
-- [ ] Log a `fence_events` row for the deployment itself, so the node's timeline starts with a known-good marker rather than an unexplained beginning
+- [ ] Bind the real device to its location in the dashboard and confirm the assignment writes a `fence_events` row, so the location's timeline starts with a known-good marker
 - [ ] Begin characterizing seasonal `temp_c` drift against calibration, so compensation can be added later from real data rather than the −2 mV/°C rule of thumb
 
 **Exit:** a real node's reading appears in the dashboard, indistinguishable in shape from mock data; alerting fires correctly at real cadence; a deliberately powered-down node produces a `silent` alert within the expected window.
@@ -1291,3 +1387,12 @@ Recorded rather than silently assumed:
    assumes yes. Field data from hardware Phase 6 confirms or refutes.
 4. **Does Timescale earn its place** once real volume is visible? At 263k
    rows/year, stock Postgres remains a viable retreat.
+5. **How much do opaque topics actually hurt in daily use?** The chip-keyed
+   topic decision trades `mosquitto_sub` readability for relocation without
+   reflashing. If it grates in practice, a read-only convenience bridge
+   republishing to `fence-by-location/<slug>/state` is a backend-only
+   addition — the authoritative path stays chip-keyed.
+6. **Is an assembly-level id worth having**, distinct from `chip_id`? The MAC
+   identifies the ESP32 module, not the enclosure, divider, or peak detector.
+   For 2–5 nodes an asset-tag sticker plus `fence_events` entries is probably
+   enough; a `hardware_units` table would be over-engineering until it isn't.

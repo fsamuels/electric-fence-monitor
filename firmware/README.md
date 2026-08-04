@@ -24,6 +24,14 @@ First-pass firmware for the fence monitor node (software plan Phases 1–2): wak
 
 One retained message per wake cycle to `fence/<NODE_ID>/state`:
 
+> **Changing in Phase 2.** The topic and identity scheme move to
+> `fence/<chip_id>/state`, keyed on the ESP32's factory eFuse MAC, and
+> `NODE_ID` leaves `config.h` entirely — which fence a board is watching
+> becomes a versioned assignment in the backend, so relocating hardware needs
+> no reflash. See
+> [docs/dashboard-plan.md](../docs/dashboard-plan.md#identity-devices-locations-and-assignments).
+> This section documents the firmware as it stands today.
+
 ```json
 {
   "node": "fence-01",
