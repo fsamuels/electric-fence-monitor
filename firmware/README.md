@@ -1,6 +1,6 @@
 # Firmware
 
-First-pass firmware for the fence monitor node (software plan Phases 1–2): wake, multi-sample the peak detector output and take the max, read battery voltage, publish a retained JSON state message over MQTT, deep sleep.
+Firmware for the fence monitor node (software plan Phases 1–2): wake every `SAMPLE_INTERVAL_S`, multi-sample the peak detector output and take the max, read battery voltage. Most wakes go straight back to sleep; only every `REPORT_INTERVAL_S`, or immediately when a reading crosses a fault threshold, does it bring up Wi-Fi and publish a retained JSON state message over MQTT. See [Duty cycle](#duty-cycle) below.
 
 ## Setup
 
@@ -20,25 +20,49 @@ First-pass firmware for the fence monitor node (software plan Phases 1–2): wak
    pio device monitor      # serial output at 115200
    ```
 
+## Duty cycle
+
+The node wakes every `SAMPLE_INTERVAL_S` (default 60) and always takes a
+reading, radio off. It only brings up Wi-Fi/MQTT — the expensive part, ~4x
+the cost of sampling — every `REPORT_INTERVAL_S` (default 900), or
+immediately, out of band, when the reading's status (`normal`/`low`/`down`
+against `LOW_KV_THRESHOLD`/`DOWN_KV_THRESHOLD`) differs from the last
+*reported* status. This is Option D from
+[dashboard-plan.md#reporting-cadence-and-alert-latency](../docs/dashboard-plan.md#reporting-cadence-and-alert-latency):
+same ~1 min fault-detection latency as reporting every minute, at roughly a
+third of the energy. Threshold state and the time-since-last-report counter
+live in RTC memory, so they survive deep sleep (not power loss). A failed
+publish doesn't reset the counters, so the next sample-cycle wake retries the
+report rather than waiting a full `REPORT_INTERVAL_S`.
+
+The on-node thresholds are intentionally coarse — they only decide whether
+*this* node interrupts its own schedule, and don't have to match the
+backend's configurable alert thresholds (software plan Phase 6).
+
 ## What it publishes
 
-One retained message per wake cycle to `fence/<node_id>/state`, keyed on the
-ESP32's MAC-derived hardware identity. Which fence a board is watching becomes
-a versioned assignment in the backend, so relocating hardware needs no reflash.
+One retained message per **report** (not per wake — see
+[Duty cycle](#duty-cycle)) to `fence/<node_id>/state`, keyed on the ESP32's
+MAC-derived hardware identity. Which fence a board is watching becomes a
+versioned assignment in the backend, so relocating hardware needs no reflash.
 See
 [docs/dashboard-plan.md](../docs/dashboard-plan.md#identity-nodes-locations-and-assignments).
 
 ```json
 {
   "node_id": "a4c1385f2b10",
-  "fw": "0.1.0",
+  "fw": "0.2.0",
   "kv": 6.93,
   "adc_mv": 1872,
   "batt_v": 3.98,
   "rssi": -71,
   "boot": 123,
   "failed_pub": 2,
-  "wifi_ms": 2300
+  "wifi_ms": 2300,
+  "seq": 47,
+  "sample_interval_s": 60,
+  "report_interval_s": 900,
+  "ts": 1751328000
 }
 ```
 
@@ -50,8 +74,12 @@ See
 | `batt_v` | Battery voltage via divider on `PIN_BATT_ADC` |
 | `rssi` | Wi-Fi signal at this wake — feeds the antenna-vs-LoRa decision |
 | `boot` | Wake counter (RTC memory; resets on power loss) |
-| `failed_pub` | Wake cycles that failed to publish since last power loss |
+| `failed_pub` | Publish attempts that failed to connect since last power loss |
 | `wifi_ms` | Time to associate — another weak-signal indicator |
+| `seq` | Monotonic per-node counter, one per publish attempt (RTC memory; resets on power loss) — reserved for future QoS-1 dedup |
+| `sample_interval_s` | Current `SAMPLE_INTERVAL_S`, so the backend's silent-window math can key off it if sampling cadence ever varies |
+| `report_interval_s` | Current `REPORT_INTERVAL_S`; already used backend-side to size the silent-node detection window |
+| `ts` | UTC epoch seconds the reading was taken, from a best-effort NTP sync at report time. Omitted if NTP doesn't land within `NTP_SYNC_TIMEOUT_MS` — the backend falls back to receive time in that case |
 
 If Wi-Fi doesn't come up within `WIFI_TIMEOUT_MS`, the node increments `failed_pub` and goes back to sleep rather than draining the battery retrying. "Node went silent" detection is the backend's job (software plan Phase 6).
 
