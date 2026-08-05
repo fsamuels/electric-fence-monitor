@@ -1292,12 +1292,12 @@ firmware is the other party to it.
 ## Phased plan
 
 ### Phase D0 — Scaffolding
-- [ ] `contract/fence-state.schema.json` + example payloads: `node_id` plus the eight non-identity fields the firmware sends today as required (`fw`, `kv`, `adc_mv`, `batt_v`, `rssi`, `boot`, `failed_pub`, `wifi_ms`); reserved optional fields (`ts`, `seq`, `report_interval_s`, `sample_interval_s`, `temp_c`) permitted-but-absent. `node_id` is specified as an **opaque topic-safe string**, not as a MAC or a fixed-width hex value
-- [ ] `docker-compose.yml` wiring Mosquitto, Postgres+Timescale, empty FastAPI app, empty ingest container, empty React app
-- [ ] Networking between services confirmed
-- [ ] `GET /healthz` returning api/broker/db plus ingest heartbeat status
-- [ ] OpenAPI → TypeScript client generation wired as a build step
-- [ ] CI workflow: `firmware/lint.sh`, backend lint/test, frontend typecheck/test, contract validation
+- [x] `contract/fence-state.schema.json` + example payloads: `node_id` plus the eight non-identity fields the firmware sends today as required (`fw`, `kv`, `adc_mv`, `batt_v`, `rssi`, `boot`, `failed_pub`, `wifi_ms`); reserved optional fields (`ts`, `seq`, `report_interval_s`, `sample_interval_s`, `temp_c`) permitted-but-absent. `node_id` is specified as an **opaque topic-safe string**, not as a MAC or a fixed-width hex value
+- [x] `docker-compose.yml` wiring Mosquitto, Postgres+Timescale, empty FastAPI app, empty ingest container, empty React app
+- [x] Networking between services confirmed
+- [x] `GET /healthz` returning api/broker/db plus ingest heartbeat status
+- [x] OpenAPI → TypeScript client generation wired as a build step
+- [x] CI workflow: `firmware/lint.sh`, backend lint/test, frontend typecheck/test, contract validation
 
 > **Mosquitto 2.x will not work out of the box, and this is where the
 > afternoon goes.** It defaults to `allow_anonymous false` with a
@@ -1310,18 +1310,18 @@ firmware is the other party to it.
 **Exit:** `docker compose up` brings up all six services; `/healthz` reports api/db/broker plus fresh ingest heartbeat green; React dev server reachable; CI green on an empty stack.
 
 ### Phase D1 — Data contract & storage
-- [ ] `nodes` / `node_state` / `readings` schema; `create_hypertable` in the initial migration; `ts` as `timestamptz`
-- [ ] `calibrations` table — versioned with `valid_from`/`valid_to`, storing the raw fit points, never mutated in place
-- [ ] `fence_events` table — operator-annotated timeline of deliberate physical changes
-- [ ] `ingest_state` heartbeat row so `/healthz` can report whether the subscriber is connected and recently active
-- [ ] MQTT ingest subscriber (`fence/+/state`) in its own container, validating against the contract schema
-- [ ] **Retained-message handling: retained → update durable `node_state`, never insert a reading, never clear `silent` from retained receipt time**
-- [ ] Optional `ts` / `seq` / `report_interval_s` / `sample_interval_s` / `temp_c` honored when present, sensible fallbacks when absent
-- [ ] `nodes` / `locations` / `node_assignments` tables, with **non-overlapping validity windows enforced in the schema** for both `node_id` and `location_id`
-- [ ] **Identity checks at ingest**: `node_id` matches the topic-safe opaque pattern `^[a-z0-9][a-z0-9-]{1,62}$` and agrees with the topic segment; unrecognized nodes auto-create as *unassigned*; locations never auto-create. Validate **shape only** — no length-12 check, no hex check, no attempt to recognise a MAC
-- [ ] Assignment change raises a `fence_events` row automatically — board swaps and relocations both land on the timeline
-- [ ] Continuous aggregate (hourly + daily) over raw `adc_mv`/`batt_v`, compression policy, retention policy
-- [ ] Ingest edge-case tests: malformed, missing field, extra field, retained replay, malformed `node_id`, topic/payload mismatch, reading from an unassigned node, overlapping assignment windows rejected, post-reset `boot` reuse not treated as a hard duplicate
+- [x] `nodes` / `node_state` / `readings` schema; `create_hypertable` in the initial migration; `ts` as `timestamptz`
+- [x] `calibrations` table — versioned with `valid_from`/`valid_to`, storing the raw fit points, never mutated in place
+- [x] `fence_events` table — operator-annotated timeline of deliberate physical changes
+- [x] `ingest_state` heartbeat row so `/healthz` can report whether the subscriber is connected and recently active
+- [x] MQTT ingest subscriber (`fence/+/state`) in its own container, validating against the contract schema
+- [x] **Retained-message handling: retained → update durable `node_state`, never insert a reading, never clear `silent` from retained receipt time**
+- [x] Optional `ts` / `seq` / `report_interval_s` / `sample_interval_s` / `temp_c` honored when present, sensible fallbacks when absent
+- [x] `nodes` / `locations` / `node_assignments` tables, with **non-overlapping validity windows enforced in the schema** for both `node_id` and `location_id`
+- [x] **Identity checks at ingest**: `node_id` matches the topic-safe opaque pattern `^[a-z0-9][a-z0-9-]{1,62}$` and agrees with the topic segment; unrecognized nodes auto-create as *unassigned*; locations never auto-create. Validate **shape only** — no length-12 check, no hex check, no attempt to recognise a MAC
+- [x] Assignment change raises a `fence_events` row automatically — board swaps and relocations both land on the timeline
+- [x] Continuous aggregate (hourly + daily) over raw `adc_mv`/`batt_v`, compression policy, retention policy
+- [x] Ingest edge-case tests: malformed, missing field, extra field, retained replay, malformed `node_id`, topic/payload mismatch, reading from an unassigned node, overlapping assignment windows rejected, post-reset `boot` reuse not treated as a hard duplicate
 
 **Exit:** manually publishing one MQTT message produces exactly one row; restarting the ingest container ten times produces **zero** additional rows; a message from an unknown `node_id` lands in the unassigned inbox rather than erroring or inventing a location.
 

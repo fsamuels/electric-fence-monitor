@@ -9,6 +9,8 @@ dependencies = [
     "asyncpg>=0.29",
     "paho-mqtt>=2.1",
     "pydantic-settings>=2.5",
+    "alembic>=1.13",
+    "jsonschema>=4.23",
 ]
 
 [project.optional-dependencies]

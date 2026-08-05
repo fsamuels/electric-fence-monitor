@@ -1,4 +1,18 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Repo-root contract/fence-state.schema.json. Correct for local dev/tests,
+# where this file lives at dashboard/backend/app/config.py; the Docker image
+# instead copies the contract to /contract and overrides this via
+# FENCE_CONTRACT_SCHEMA_PATH (see dashboard/backend/Dockerfile) -- the
+# container's shallower directory tree doesn't have a parents[3] at all.
+_here_parents = Path(__file__).resolve().parents
+_DEFAULT_CONTRACT_SCHEMA_PATH = str(
+    _here_parents[3] / "contract" / "fence-state.schema.json"
+    if len(_here_parents) > 3
+    else "/contract/fence-state.schema.json"
+)
 
 
 class Settings(BaseSettings):
@@ -13,6 +27,8 @@ class Settings(BaseSettings):
     # cadence; for D0's empty ingest container it just needs to be longer
     # than the ingest loop's own sleep interval.
     ingest_heartbeat_stale_s: int = 30
+
+    contract_schema_path: str = _DEFAULT_CONTRACT_SCHEMA_PATH
 
 
 settings = Settings()

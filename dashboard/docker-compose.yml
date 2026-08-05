@@ -14,7 +14,6 @@ services:
       POSTGRES_DB: fence
     volumes:
       - db-data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -23,8 +22,21 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    build:
+      context: ..
+      dockerfile: dashboard/backend/Dockerfile
+    command: ["migrate"]
+    environment:
+      FENCE_DATABASE_URL: postgresql+asyncpg://fence:fence@db:5432/fence
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
-    build: ./backend
+    build:
+      context: ..
+      dockerfile: dashboard/backend/Dockerfile
     command: ["api"]
     environment:
       FENCE_DATABASE_URL: postgresql+asyncpg://fence:fence@db:5432/fence
@@ -35,11 +47,15 @@ services:
         condition: service_healthy
       broker:
         condition: service_started
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
 
   ingest:
-    build: ./backend
+    build:
+      context: ..
+      dockerfile: dashboard/backend/Dockerfile
     command: ["ingest"]
     environment:
       FENCE_DATABASE_URL: postgresql+asyncpg://fence:fence@db:5432/fence
@@ -50,6 +66,8 @@ services:
         condition: service_healthy
       broker:
         condition: service_started
+      migrate:
+        condition: service_completed_successfully
 
   mock-publisher:
     build: ./mock-publisher
