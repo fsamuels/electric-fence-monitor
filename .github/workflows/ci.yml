@@ -58,6 +58,45 @@ jobs:
       - run: alembic upgrade head
       - run: pytest -q
 
+  mock-publisher:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: timescale/timescaledb:2.17.2-pg16
+        env:
+          POSTGRES_USER: fence
+          POSTGRES_PASSWORD: fence
+          POSTGRES_DB: fence
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fence -d fence"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FENCE_DATABASE_URL: postgresql+asyncpg://fence:fence@localhost:5432/fence
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend (schema migration only; mock-publisher only shares app/models.py)
+        working-directory: dashboard/backend
+        run: pip install -e .
+      - name: Migrate schema
+        working-directory: dashboard/backend
+        run: alembic upgrade head
+      - name: Install mock-publisher deps
+        working-directory: dashboard/mock-publisher
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Lint
+        working-directory: dashboard/mock-publisher
+        run: ruff check .
+      - name: Test
+        working-directory: dashboard/mock-publisher
+        run: pytest -q
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

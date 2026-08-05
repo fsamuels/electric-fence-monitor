@@ -1326,15 +1326,15 @@ firmware is the other party to it.
 **Exit:** manually publishing one MQTT message produces exactly one row; restarting the ingest container ten times produces **zero** additional rows; a message from an unknown `node_id` lands in the unassigned inbox rather than erroring or inventing a location.
 
 ### Phase D2 — Mock publisher
-- [ ] Normal-operation scenario for one simulated node, live mode at accelerated cadence
-- [ ] Remaining scenarios: slow-decline, low-voltage, fence-down, node-silent, battery-drain
-- [ ] `--cadence realtime` option, covering both the current 600 s single-interval model and the recommended 60 s sample / 900 s report split
-- [ ] **Report-by-exception simulation**: routine heartbeats *plus* immediate off-cadence transmits on threshold crossings, so irregular arrival spacing is exercised before real firmware produces it
-- [ ] Explicit mock behavior for the future split-cadence payload question: latest-only, summary, or timestamped batch. Pick one before firmware buffers multiple samples per report
-- [ ] **Backfill mode**: N days of history at real spacing, written directly to the DB, including plausible `fence_events` rows to annotate against
-- [ ] Emit `temp_c`; a **board-swap scenario** (assignment closed and reopened at one location with a different `node_id`), a **relocation scenario** (one `node_id` moved between locations), and an **uncalibrated scenario** (no `calibrations` row covering the readings)
-- [ ] Reserved mock `node_id` prefix (`mock-0001`…) so mock and real hardware never collide and mock rows stay separable — trivially available now that `node_id` is an opaque string rather than a MAC
-- [ ] Contract test: every scenario's payload validates against `contract/fence-state.schema.json`
+- [x] Normal-operation scenario for one simulated node, live mode at accelerated cadence
+- [x] Remaining scenarios: slow-decline, low-voltage, fence-down, node-silent, battery-drain
+- [x] `--cadence realtime` option, covering both the current 600 s single-interval model and the recommended 60 s sample / 900 s report split (`--cadence realtime-split`)
+- [x] **Report-by-exception simulation**: routine heartbeats *plus* immediate off-cadence transmits on threshold crossings, so irregular arrival spacing is exercised before real firmware produces it
+- [x] Explicit mock behavior for the future split-cadence payload question: latest-only, summary, or timestamped batch. Pick one before firmware buffers multiple samples per report — mock publisher sends **latest-only** (`scenarios.build_payload`), matching what current firmware sends
+- [x] **Backfill mode**: N days of history at real spacing, written directly to the DB, including plausible `fence_events` rows to annotate against
+- [x] Emit `temp_c`; a **board-swap scenario** (assignment closed and reopened at one location with a different `node_id`), a **relocation scenario** (one `node_id` moved between locations), and an **uncalibrated scenario** (no `calibrations` row covering the readings) — all three available via `--history`
+- [x] Reserved mock `node_id` prefix (`mock-0001`…) so mock and real hardware never collide and mock rows stay separable — trivially available now that `node_id` is an opaque string rather than a MAC
+- [x] Contract test: every scenario's payload validates against `contract/fence-state.schema.json`
 
 **Exit:** DB fills with plausible time series across every scenario on demand; `--backfill 90d` produces a season of realistically-spaced history in seconds; a fault transmit arriving between heartbeats is stored and charted correctly rather than treated as a gap.
 
