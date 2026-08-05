@@ -1360,12 +1360,12 @@ firmware is the other party to it.
 **Exit:** dashboard visibly reflects mock data changes within one polling interval; the 7d chart looks right against 90 days of backfill rather than twenty minutes of live mock; a backfilled fence extension reads as an annotated step, not an anomaly.
 
 ### Phase D5 — Multi-node & live updates
-- [ ] Grid populated with all monitored locations, one card each
-- [ ] **Unassigned-node inbox** and the assignment dialog — the provisioning and relocation flow, and the reason no name lives in firmware
-- [ ] Link-quality indicator (`failed_pub`, `wifi_ms`, `rssi`)
-- [ ] **"Log a change" affordance** writing `fence_events` — a button beats a markdown file nobody updates
-- [ ] Board swaps and calibration changes surfaced on the node detail timeline
-- [ ] Polling-based live updates; WebSocket as stretch goal
+- [x] Grid populated with all monitored locations, one card each
+- [x] **Unassigned-node inbox** and the assignment dialog — the provisioning and relocation flow, and the reason no name lives in firmware
+- [x] Link-quality indicator (`failed_pub`, `wifi_ms`, `rssi`)
+- [x] **"Log a change" affordance** writing `fence_events` — a button beats a markdown file nobody updates
+- [x] Board swaps and calibration changes surfaced on the node detail timeline
+- [x] Polling-based live updates; WebSocket as stretch goal
 
 **Exit:** 2+ monitored locations visible simultaneously; a silent/down location is visually distinct from the rest; an unassigned node appears in the inbox rather than as a broken card; a logged fence change appears on the chart without a deploy.
 

@@ -388,3 +388,59 @@ async def test_list_nodes_reports_link_quality(db_session) -> None:
         assert node["wifi_ms"] == 900
         assert node["failed_pub"] == 1
         assert node["location_id"] is None
+
+
+async def test_get_unknown_node_404(db_session) -> None:
+    async with await _client() as client:
+        resp = await client.get("/nodes/no-such-node")
+        assert resp.status_code == 404
+
+
+async def test_node_detail_shows_full_assignment_history(db_session) -> None:
+    await _insert_node(db_session, "node-n")
+
+    async with await _client() as client:
+        await client.post("/locations", json={"location_id": "loc-n1", "label": "Loc N1"})
+        await client.post("/locations", json={"location_id": "loc-n2", "label": "Loc N2"})
+        await client.post("/nodes/node-n/assignment", json={"location_id": "loc-n1"})
+        # Relocate: closes loc-n1's row, opens a new one at loc-n2.
+        await client.post("/nodes/node-n/assignment", json={"location_id": "loc-n2"})
+
+        resp = await client.get("/nodes/node-n")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["node_id"] == "node-n"
+        assert body["location_id"] == "loc-n2"
+        assert len(body["assignments"]) == 2
+        # Ordered valid_from DESC -- most recent (open) assignment first.
+        assert body["assignments"][0]["location_id"] == "loc-n2"
+        assert body["assignments"][0]["valid_to"] is None
+        assert body["assignments"][1]["location_id"] == "loc-n1"
+        assert body["assignments"][1]["valid_to"] is not None
+
+
+async def test_node_detail_includes_calibration_history(db_session) -> None:
+    await _insert_node(db_session, "node-o")
+
+    async with await _client() as client:
+        await client.post("/locations", json={"location_id": "loc-o", "label": "Loc O"})
+        await client.post("/nodes/node-o/assignment", json={"location_id": "loc-o"})
+
+    await _insert_calibration(
+        db_session,
+        "node-o",
+        "loc-o",
+        valid_from=NOW - timedelta(days=1),
+        valid_to=None,
+        kv_per_mv=0.0037,
+        kv_offset=0.1,
+    )
+
+    async with await _client() as client:
+        resp = await client.get("/nodes/node-o")
+        body = resp.json()
+        assert len(body["calibrations"]) == 1
+        cal = body["calibrations"][0]
+        assert cal["location_id"] == "loc-o"
+        assert cal["kv_per_mv"] == 0.0037
+        assert cal["kv_offset"] == 0.1
