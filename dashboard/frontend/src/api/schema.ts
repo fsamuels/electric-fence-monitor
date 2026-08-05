@@ -21,10 +21,174 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/locations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Locations */
+        get: operations["list_locations_locations_get"];
+        put?: never;
+        /** Create Location */
+        post: operations["create_location_locations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/locations/{location_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Location */
+        get: operations["get_location_locations__location_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/locations/{location_id}/readings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Location Readings */
+        get: operations["get_location_readings_locations__location_id__readings_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/fence-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Fence Events */
+        get: operations["list_fence_events_fence_events_get"];
+        put?: never;
+        /** Create Fence Event */
+        post: operations["create_fence_event_fence_events_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Nodes */
+        get: operations["list_nodes_nodes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/nodes/{node_id}/assignment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Assign Node */
+        post: operations["assign_node_nodes__node_id__assignment_post"];
+        /** Unassign Node */
+        delete: operations["unassign_node_nodes__node_id__assignment_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Assignment */
+        Assignment: {
+            /** Id */
+            id: number;
+            /** Node Id */
+            node_id: string;
+            /** Location Id */
+            location_id: string;
+            /**
+             * Valid From
+             * Format: date-time
+             */
+            valid_from: string;
+            /** Valid To */
+            valid_to: string | null;
+        };
+        /** AssignmentCreate */
+        AssignmentCreate: {
+            /** Location Id */
+            location_id: string;
+            /** Valid From */
+            valid_from?: string | null;
+        };
+        /** FenceEvent */
+        FenceEvent: {
+            /** Id */
+            id: number;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /** Location Id */
+            location_id: string | null;
+            /** Node Id */
+            node_id: string | null;
+            /** Kind */
+            kind: string;
+            /** Note */
+            note: string | null;
+        };
+        /** FenceEventCreate */
+        FenceEventCreate: {
+            /** Ts */
+            ts?: string | null;
+            /** Location Id */
+            location_id?: string | null;
+            /** Node Id */
+            node_id?: string | null;
+            /** Kind */
+            kind: string;
+            /** Note */
+            note?: string | null;
+        };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
         /** HealthResponse */
         HealthResponse: {
             /** Api */
@@ -45,6 +209,122 @@ export interface components {
             last_heartbeat: string | null;
             /** Healthy */
             healthy: boolean;
+        };
+        /** LocationCreate */
+        LocationCreate: {
+            /** Location Id */
+            location_id: string;
+            /** Label */
+            label: string;
+            /** Notes */
+            notes?: string | null;
+        };
+        /** LocationDetail */
+        LocationDetail: {
+            /** Location Id */
+            location_id: string;
+            /** Label */
+            label: string;
+            status: components["schemas"]["Status"];
+            /** Node Id */
+            node_id: string | null;
+            /** Current Kv */
+            current_kv: number | null;
+            /** Provisional */
+            provisional: boolean;
+            /** Updated At */
+            updated_at: string | null;
+            /** Notes */
+            notes: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Assignment Valid From */
+            assignment_valid_from: string | null;
+        };
+        /** LocationSummary */
+        LocationSummary: {
+            /** Location Id */
+            location_id: string;
+            /** Label */
+            label: string;
+            status: components["schemas"]["Status"];
+            /** Node Id */
+            node_id: string | null;
+            /** Current Kv */
+            current_kv: number | null;
+            /** Provisional */
+            provisional: boolean;
+            /** Updated At */
+            updated_at: string | null;
+        };
+        /** NodeSummary */
+        NodeSummary: {
+            /** Node Id */
+            node_id: string;
+            /** Fw Version */
+            fw_version: string | null;
+            /** Report Interval S */
+            report_interval_s: number | null;
+            /** Sample Interval S */
+            sample_interval_s: number | null;
+            /**
+             * First Seen
+             * Format: date-time
+             */
+            first_seen: string;
+            /** Location Id */
+            location_id: string | null;
+            /** Last Payload Ts */
+            last_payload_ts: string | null;
+            /** Last Received At */
+            last_received_at: string | null;
+            /** Rssi */
+            rssi: number | null;
+            /** Wifi Ms */
+            wifi_ms: number | null;
+            /** Failed Pub */
+            failed_pub: number | null;
+        };
+        /** ReadingPoint */
+        ReadingPoint: {
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /** Kv Avg */
+            kv_avg: number | null;
+            /** Kv Min */
+            kv_min: number | null;
+            /** Kv Max */
+            kv_max: number | null;
+            /** Adc Mv Avg */
+            adc_mv_avg: number;
+            /** Provisional */
+            provisional: boolean;
+            /** Reading Count */
+            reading_count: number;
+        };
+        /**
+         * Status
+         * @enum {string}
+         */
+        Status: "ok" | "low" | "down" | "silent" | "unmonitored";
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -71,6 +351,276 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    list_locations_locations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationSummary"][];
+                };
+            };
+        };
+    };
+    create_location_locations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_location_locations__location_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                location_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_location_readings_locations__location_id__readings_get: {
+        parameters: {
+            query: {
+                since: string;
+                until?: string | null;
+                bucket?: string;
+            };
+            header?: never;
+            path: {
+                location_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadingPoint"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_fence_events_fence_events_get: {
+        parameters: {
+            query?: {
+                location_id?: string | null;
+                node_id?: string | null;
+                since?: string | null;
+                until?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FenceEvent"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_fence_event_fence_events_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FenceEventCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FenceEvent"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_nodes_nodes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeSummary"][];
+                };
+            };
+        };
+    };
+    assign_node_nodes__node_id__assignment_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignmentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Assignment"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unassign_node_nodes__node_id__assignment_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

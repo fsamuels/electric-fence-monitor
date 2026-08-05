@@ -1339,15 +1339,15 @@ firmware is the other party to it.
 **Exit:** DB fills with plausible time series across every scenario on demand; `--backfill 90d` produces a season of realistically-spaced history in seconds; a fault transmit arriving between heartbeats is stored and charted correctly rather than treated as a gap.
 
 ### Phase D3 — API
-- [ ] `GET /locations`, `GET /locations/{id}`, `GET /locations/{id}/readings?since=&bucket=`, `GET /nodes`, assignment write endpoints
-- [ ] **kV and location both resolved at query time** by joining each reading to the `node_assignments` and `calibrations` rows whose validity windows cover its `ts` — never read from the payload's advisory `kv`, never from a location stamped at ingest
-- [ ] Readings with no covering calibration returned as **provisional**, carrying `adc_mv` and an explicit flag rather than a plausible-looking number
-- [ ] `GET`/`POST /fence-events` — read for chart annotation, write for the "log a change" affordance
-- [ ] `derive_status()` as a pure, I/O-free function per the thresholds table above
-- [ ] Windows expressed as multiples of each node's `report_interval_s`, never absolute seconds or the sample interval
-- [ ] Table-driven status tests across every scenario and boundary condition, including irregular arrival from off-cadence fault transmits
-- [ ] Alert/status tests cover the report-by-exception ownership question: backend debounce still sees enough low samples, or firmware sends an explicit local fault state that changes the backend rule
-- [ ] Retroactive-recalibration test: inserting a backdated `calibrations` row changes historical kV **without touching `readings`**
+- [x] `GET /locations`, `GET /locations/{id}`, `GET /locations/{id}/readings?since=&bucket=`, `GET /nodes`, assignment write endpoints
+- [x] **kV and location both resolved at query time** by joining each reading to the `node_assignments` and `calibrations` rows whose validity windows cover its `ts` — never read from the payload's advisory `kv`, never from a location stamped at ingest
+- [x] Readings with no covering calibration returned as **provisional**, carrying `adc_mv` and an explicit flag rather than a plausible-looking number
+- [x] `GET`/`POST /fence-events` — read for chart annotation, write for the "log a change" affordance
+- [x] `derive_status()` as a pure, I/O-free function per the thresholds table above
+- [x] Windows expressed as multiples of each node's `report_interval_s`, never absolute seconds or the sample interval
+- [x] Table-driven status tests across every scenario and boundary condition, including irregular arrival from off-cadence fault transmits
+- [x] Alert/status tests cover the report-by-exception ownership question: backend debounce still sees enough low samples, or firmware sends an explicit local fault state that changes the backend rule
+- [x] Retroactive-recalibration test: inserting a backdated `calibrations` row changes historical kV **without touching `readings`**
 
 **Exit:** API returns the correct derived status for each mock scenario, and the same status for a node whether it's running at 10 s or 900 s cadence; adding a calibration row retroactively corrects history in one write; relocating a node in the assignment table leaves its prior readings attributed to the prior location.
 

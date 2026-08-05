@@ -30,5 +30,13 @@ class Settings(BaseSettings):
 
     contract_schema_path: str = _DEFAULT_CONTRACT_SCHEMA_PATH
 
+    # Status thresholds -- see docs/dashboard-plan.md's "Status derivation"
+    # table and software-plan.md Phase 6. Config, not hardcoded: the plan
+    # calls out these may differ per node or season.
+    status_low_kv: float = 5.0
+    status_down_kv: float = 1.0
+    status_low_consecutive: int = 3
+    status_silent_multiplier: float = 2.5
+
 
 settings = Settings()
