@@ -1,0 +1,9 @@
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Lets tests (and this module itself, run outside Docker) resolve `app` to
+# the real backend package -- see Dockerfile for why only models.py is
+# copied at image build time instead of installing the whole backend.
+pythonpath = [".", "../backend"]

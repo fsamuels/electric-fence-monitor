@@ -70,13 +70,21 @@ services:
         condition: service_completed_successfully
 
   mock-publisher:
-    build: ./mock-publisher
+    build:
+      context: ..
+      dockerfile: dashboard/mock-publisher/Dockerfile
     environment:
       FENCE_MQTT_HOST: broker
       FENCE_MQTT_PORT: "1883"
+      # Only used in --backfill mode; live mode never touches the DB.
+      FENCE_DATABASE_URL: postgresql+asyncpg://fence:fence@db:5432/fence
     depends_on:
       broker:
         condition: service_started
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build: ./frontend

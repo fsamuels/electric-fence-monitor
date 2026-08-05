@@ -10,6 +10,10 @@ dashboard/backend/**/__pycache__/
 dashboard/backend/*.egg-info/
 dashboard/backend/.pytest_cache/
 dashboard/backend/.ruff_cache/
+dashboard/mock-publisher/.venv/
+dashboard/mock-publisher/**/__pycache__/
+dashboard/mock-publisher/.pytest_cache/
+dashboard/mock-publisher/.ruff_cache/
 dashboard/frontend/node_modules/
 dashboard/frontend/dist/
 dashboard/frontend/tsconfig.tsbuildinfo
