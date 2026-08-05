@@ -47,7 +47,28 @@ class Assignment(BaseModel):
     valid_to: datetime | None
 
 
-_NODES_SQL = """
+class AssignmentHistoryEntry(BaseModel):
+    location_id: str
+    valid_from: datetime
+    valid_to: datetime | None
+
+
+class CalibrationHistoryEntry(BaseModel):
+    location_id: str
+    valid_from: datetime
+    valid_to: datetime | None
+    kv_per_mv: float
+    kv_offset: float
+    method: str | None
+    notes: str | None
+
+
+class NodeDetail(NodeSummary):
+    assignments: list[AssignmentHistoryEntry]
+    calibrations: list[CalibrationHistoryEntry]
+
+
+_NODE_SUMMARY_SELECT = """
 SELECT
     n.node_id,
     n.fw_version,
@@ -63,8 +84,10 @@ SELECT
 FROM nodes n
 LEFT JOIN node_assignments a ON a.node_id = n.node_id AND a.valid_to IS NULL
 LEFT JOIN node_state s ON s.node_id = n.node_id
-ORDER BY n.node_id
 """
+
+_NODES_SQL = _NODE_SUMMARY_SELECT + "ORDER BY n.node_id"
+_NODE_BY_ID_SQL = _NODE_SUMMARY_SELECT + "WHERE n.node_id = :node_id"
 
 
 @router.get("/nodes", response_model=list[NodeSummary])
@@ -90,6 +113,44 @@ async def _location_exists(session: AsyncSession, location_id: str) -> bool:
         )
     ).one_or_none()
     return row is not None
+
+
+_ASSIGNMENT_HISTORY_SQL = """
+SELECT location_id, valid_from, valid_to
+FROM node_assignments
+WHERE node_id = :node_id
+ORDER BY valid_from DESC
+"""
+
+_CALIBRATION_HISTORY_SQL = """
+SELECT location_id, valid_from, valid_to, kv_per_mv, kv_offset, method, notes
+FROM calibrations
+WHERE node_id = :node_id
+ORDER BY valid_from DESC
+"""
+
+
+@router.get("/nodes/{node_id}", response_model=NodeDetail)
+async def get_node(node_id: str, session: AsyncSession = Depends(get_session)) -> NodeDetail:
+    if not await _node_exists(session, node_id):
+        raise HTTPException(status_code=404, detail="node not found")
+
+    summary_row = (
+        await session.execute(text(_NODE_BY_ID_SQL), {"node_id": node_id})
+    ).one()
+
+    assignments = (
+        await session.execute(text(_ASSIGNMENT_HISTORY_SQL), {"node_id": node_id})
+    ).all()
+    calibrations = (
+        await session.execute(text(_CALIBRATION_HISTORY_SQL), {"node_id": node_id})
+    ).all()
+
+    return NodeDetail(
+        **summary_row._mapping,
+        assignments=[AssignmentHistoryEntry(**r._mapping) for r in assignments],
+        calibrations=[CalibrationHistoryEntry(**r._mapping) for r in calibrations],
+    )
 
 
 @router.post("/nodes/{node_id}/assignment", response_model=Assignment, status_code=201)

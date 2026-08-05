@@ -2,11 +2,13 @@
 
 Remote, battery/solar-powered electric fence voltage monitor for Reign Cloud Ranch. An ESP32-based node reads fence voltage through a high-voltage resistive divider and peak detector, reports over the property's existing mesh Wi-Fi, and raises alerts when voltage drops below a safe threshold or the fence goes down entirely — so faults, shorts, and vegetation contact can be caught without walking the fence line daily.
 
-**Status:** design phase. No hardware built or firmware written yet. See the development plans:
+**Status:** hardware is still design-phase (no unit built yet); the dashboard is well ahead of it, built against mock data using the firmware's real MQTT contract. See [docs/current-status.md](docs/current-status.md) for exactly what's done vs. open, or the plans below for full detail:
 
-- [Hardware development plan](docs/hardware-plan.md)
-- [Software development plan](docs/software-plan.md)
-- [Dashboard development plan](docs/dashboard-plan.md) — being built ahead of hardware, against mock data
+- [Hardware development plan](docs/hardware-plan.md) — design phase, nothing physically built yet
+- [Software development plan](docs/software-plan.md) — firmware Phases 1–2 have working code; see [firmware/README.md](firmware/README.md)
+- [Dashboard development plan](docs/dashboard-plan.md) — Phases D0–D5 complete (see [docs/current-status.md](docs/current-status.md)); built ahead of hardware, against mock data
+- [Architecture overview](docs/architecture.md) — current-state summary of the dashboard stack
+- [Roadmap](docs/roadmap.md) — prioritized upcoming work
 
 ---
 
@@ -166,6 +168,51 @@ Researched as alternatives and benchmarks before deciding to build custom:
 
 ---
 
+## Dashboard: Local Development
+
+The dashboard is the one part of this project that runs today, entirely against mock data — no hardware required. Full architecture in [docs/architecture.md](docs/architecture.md).
+
+**Stack:** Mosquitto (MQTT broker) + Postgres/TimescaleDB + FastAPI + React/TypeScript, run as seven Docker Compose services (`broker`, `db`, `migrate`, `api`, `ingest`, `mock-publisher`, `frontend`).
+
+### Run it
+
+```sh
+cd dashboard
+docker compose up -d
+```
+
+Then open the frontend at `http://localhost:5173`. The API is at `http://localhost:8000` (`/healthz`, `/locations`, `/nodes`, ...). A single mock node publishes live data by default; to seed a fuller multi-location demo, run the mock publisher's backfill mode against 2+ nodes:
+
+```sh
+docker compose exec mock-publisher python publisher.py --backfill 7d --backfill-nodes 3
+```
+
+Then create/assign locations via the API or the dashboard's own "Assign node" UI — locations are never auto-created.
+
+### Testing
+
+```sh
+# Backend (needs Postgres reachable — docker compose up -d db, then locally):
+cd dashboard/backend
+pip install -e ".[dev]"
+export FENCE_DATABASE_URL="postgresql+asyncpg://fence:fence@localhost:5432/fence"
+alembic upgrade head
+pytest -q
+
+# Frontend:
+cd dashboard/frontend
+npm install
+npm run lint && npm run typecheck && npm test
+```
+
+CI (`.github/workflows/ci.yml`) runs all of the above plus firmware lint, contract-schema validation, mock-publisher tests, and an API-schema-drift check (fails if `src/api/schema.ts` is out of sync with the backend's generated OpenAPI schema — regenerate with `npm run generate:api` against a running API).
+
+### Important configuration
+
+- `FENCE_DATABASE_URL`, `FENCE_MQTT_HOST` / `FENCE_MQTT_PORT` — backend/ingest, prefixed `FENCE_` (see `dashboard/backend/app/config.py`).
+- `VITE_API_BASE_URL` — frontend's API origin, defaults to `http://localhost:8000` (see `dashboard/frontend/src/api/client.ts`).
+- `dashboard/mosquitto/` — broker config; Mosquitto 2.x needs an explicit `listener 1883 0.0.0.0`, or every non-broker container silently fails to connect.
+
 ## Key Open Risks
 
 1. **Peak detector RC tuning** — highest technical risk; requires breadboard prototyping and empirical adjustment, not just calculated values.
@@ -187,9 +234,13 @@ This project involves measuring circuits carrying up to 10,000 V pulses. Even th
 
 ```
 README.md                 Project overview (this file)
+CONTRIBUTING.md           Branch-naming convention
 contract/                 Authoritative MQTT payload schema — shared contract
                           between firmware and backend, validated in CI
 docs/
+  architecture.md         Current-state architecture of the dashboard stack
+  current-status.md       What's done, what's open, recommended next actions
+  roadmap.md              Prioritized upcoming work, short/medium/long-term
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)
   dashboard-plan.md       Dashboard architecture + phased plan (mock data, ahead of hardware)

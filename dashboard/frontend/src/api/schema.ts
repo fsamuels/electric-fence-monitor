@@ -108,6 +108,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/nodes/{node_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Node */
+        get: operations["get_node_nodes__node_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/nodes/{node_id}/assignment": {
         parameters: {
             query?: never;
@@ -152,6 +169,38 @@ export interface components {
             location_id: string;
             /** Valid From */
             valid_from?: string | null;
+        };
+        /** AssignmentHistoryEntry */
+        AssignmentHistoryEntry: {
+            /** Location Id */
+            location_id: string;
+            /**
+             * Valid From
+             * Format: date-time
+             */
+            valid_from: string;
+            /** Valid To */
+            valid_to: string | null;
+        };
+        /** CalibrationHistoryEntry */
+        CalibrationHistoryEntry: {
+            /** Location Id */
+            location_id: string;
+            /**
+             * Valid From
+             * Format: date-time
+             */
+            valid_from: string;
+            /** Valid To */
+            valid_to: string | null;
+            /** Kv Per Mv */
+            kv_per_mv: number;
+            /** Kv Offset */
+            kv_offset: number;
+            /** Method */
+            method: string | null;
+            /** Notes */
+            notes: string | null;
         };
         /** FenceEvent */
         FenceEvent: {
@@ -259,6 +308,38 @@ export interface components {
             provisional: boolean;
             /** Updated At */
             updated_at: string | null;
+        };
+        /** NodeDetail */
+        NodeDetail: {
+            /** Node Id */
+            node_id: string;
+            /** Fw Version */
+            fw_version: string | null;
+            /** Report Interval S */
+            report_interval_s: number | null;
+            /** Sample Interval S */
+            sample_interval_s: number | null;
+            /**
+             * First Seen
+             * Format: date-time
+             */
+            first_seen: string;
+            /** Location Id */
+            location_id: string | null;
+            /** Last Payload Ts */
+            last_payload_ts: string | null;
+            /** Last Received At */
+            last_received_at: string | null;
+            /** Rssi */
+            rssi: number | null;
+            /** Wifi Ms */
+            wifi_ms: number | null;
+            /** Failed Pub */
+            failed_pub: number | null;
+            /** Assignments */
+            assignments: components["schemas"]["AssignmentHistoryEntry"][];
+            /** Calibrations */
+            calibrations: components["schemas"]["CalibrationHistoryEntry"][];
         };
         /** NodeSummary */
         NodeSummary: {
@@ -557,6 +638,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NodeSummary"][];
+                };
+            };
+        };
+    };
+    get_node_nodes__node_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                node_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NodeDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
