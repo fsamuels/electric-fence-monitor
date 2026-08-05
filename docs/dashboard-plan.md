@@ -1352,10 +1352,10 @@ firmware is the other party to it.
 **Exit:** API returns the correct derived status for each mock scenario, and the same status for a node whether it's running at 10 s or 900 s cadence; adding a calibration row retroactively corrects history in one write; relocating a node in the assignment table leaves its prior readings attributed to the prior location.
 
 ### Phase D4 — Frontend MVP
-- [ ] Location grid shell rendering a single `LocationCard`: status badge, current kV, voltage-over-time chart
-- [ ] Chart ranges 24h/7d/30d/season with server-side bucketing, validated against backfilled data
-- [ ] Provisional presentation for readings with no covering calibration, with `adc_mv` shown alongside kV
-- [ ] `fence_events` rendered as chart annotations — the difference between "something broke here" and "we extended the fence here"
+- [x] Location grid shell rendering a single `LocationCard`: status badge, current kV, voltage-over-time chart
+- [x] Chart ranges 24h/7d/30d/season with server-side bucketing, validated against backfilled data
+- [x] Provisional presentation for readings with no covering calibration, with `adc_mv` shown alongside kV
+- [x] `fence_events` rendered as chart annotations — the difference between "something broke here" and "we extended the fence here"
 
 **Exit:** dashboard visibly reflects mock data changes within one polling interval; the 7d chart looks right against 90 days of backfill rather than twenty minutes of live mock; a backfilled fence extension reads as an annotated step, not an anomaly.
 

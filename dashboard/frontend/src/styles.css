@@ -1,0 +1,143 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #14161a;
+  color: #e6e8eb;
+}
+
+.dashboard {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.dashboard-error {
+  background: #3a1f22;
+  color: #ffb3b8;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+.location-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 20px;
+}
+
+.location-card {
+  background: #1c1f26;
+  border: 1px solid #2a2e35;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.location-card[data-status="down"],
+.location-card[data-status="silent"] {
+  border-color: #a3242c;
+}
+
+.location-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.location-card-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.location-node-id {
+  font-size: 0.8rem;
+  color: #9aa0aa;
+}
+
+.status-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.location-current-kv {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.kv-value {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.kv-unit {
+  font-size: 1rem;
+  color: #9aa0aa;
+}
+
+.kv-provisional {
+  font-size: 0.75rem;
+  color: #e0b03a;
+  border: 1px solid #e0b03a;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+.kv-unavailable {
+  color: #9aa0aa;
+}
+
+.range-selector {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.range-button {
+  background: transparent;
+  border: 1px solid #2a2e35;
+  color: #c9ccd1;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.range-button.active {
+  background: #2a2e35;
+  color: #fff;
+}
+
+.chart-loading,
+.chart-empty,
+.chart-error {
+  color: #9aa0aa;
+  padding: 24px 0;
+  text-align: center;
+}
+
+.chart-error {
+  color: #ffb3b8;
+}
+
+.chart-tooltip {
+  background: #1c1f26;
+  border: 1px solid #2a2e35;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+}
+
+.tooltip-provisional {
+  color: #e0b03a;
+}
