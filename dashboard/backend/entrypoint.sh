@@ -8,8 +8,11 @@ case "$1" in
   ingest)
     exec python -m app.ingest
     ;;
+  migrate)
+    exec alembic upgrade head
+    ;;
   *)
-    echo "usage: entrypoint.sh {api|ingest}" >&2
+    echo "usage: entrypoint.sh {api|ingest|migrate}" >&2
     exit 1
     ;;
 esac
