@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <esp_mac.h>
@@ -24,7 +25,11 @@
 
 #include "config.h"
 
-#define FW_VERSION "0.2.0"
+#define FW_VERSION "0.3.0"
+
+// Bounded window to catch a retained fence/<node_id>/calib/set command
+// during a report wake, on top of the connection already paid for.
+#define CALIB_SET_CHECK_MS 300
 
 enum FenceStatus : uint8_t { STATUS_NORMAL = 0, STATUS_LOW = 1, STATUS_DOWN = 2 };
 
@@ -48,6 +53,23 @@ RTC_DATA_ATTR uint32_t seqCounter = 0;
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
+static Preferences calibPrefs;
+
+// Runtime calibration constant: kv = adc_mv * calGainKvPerMv + calOffsetKv.
+// Loaded from NVS at boot (loadCalibration()); falls back to the
+// compile-time CAL_KV_PER_MV/CAL_KV_OFFSET defaults only on first-ever boot.
+// This is on-node only — purely for the local fault-threshold check added
+// in Phase 2. The backend computes its own authoritative kV from raw
+// adc_mv via a separate, versioned calibrations table; this constant can be
+// coarse. See docs/dashboard-plan.md#calibration.
+static float calGainKvPerMv = CAL_KV_PER_MV;
+static float calOffsetKv = CAL_KV_OFFSET;
+
+// Set by mqttCallback() when a fence/<node_id>/calib/set command arrives
+// during the bounded check window in checkCalibrationUpdate().
+static bool calibUpdateReceived = false;
+static float calibUpdateGain = 0.0f;
+static float calibUpdateOffset = 0.0f;
 
 // The node's own identifier: stable for the life of the board and assigned
 // without any per-node config step. Downstream (topic, payload, backend) this
@@ -67,17 +89,72 @@ static void formatNodeId(char *buffer, size_t size) {
 
 // Continuously sample the peak detector output and keep the max.
 // analogReadMilliVolts applies the factory ADC calibration, which matters:
-// the raw ESP32 ADC is nonlinear at the extremes.
-static uint32_t sampleFencePeakMv() {
+// the raw ESP32 ADC is nonlinear at the extremes. windowMs is a parameter
+// rather than always SAMPLE_WINDOW_MS so calibration mode can use a shorter,
+// more responsive window (CALIB_SAMPLE_WINDOW_MS) while attended.
+static uint32_t sampleFencePeakMv(uint32_t windowMs) {
   uint32_t maxMv = 0;
   const uint32_t start = millis();
-  while (millis() - start < SAMPLE_WINDOW_MS) {
+  while (millis() - start < windowMs) {
     const uint32_t mv = analogReadMilliVolts(PIN_FENCE_ADC);
     if (mv > maxMv) {
       maxMv = mv;
     }
   }
   return maxMv;
+}
+
+// Load the on-node calibration constant from NVS. Absent on first-ever boot
+// (or after a full erase), in which case the compile-time defaults are
+// seeded in so there's a single consistent source of truth from then on.
+static void loadCalibration() {
+  calibPrefs.begin("fence-cal", true);
+  const bool hasGain = calibPrefs.isKey("gain");
+  if (hasGain) {
+    calGainKvPerMv = calibPrefs.getFloat("gain", CAL_KV_PER_MV);
+    calOffsetKv = calibPrefs.getFloat("offset", CAL_KV_OFFSET);
+  }
+  calibPrefs.end();
+  if (!hasGain) {
+    calibPrefs.begin("fence-cal", false);
+    calibPrefs.putFloat("gain", calGainKvPerMv);
+    calibPrefs.putFloat("offset", calOffsetKv);
+    calibPrefs.end();
+  }
+}
+
+// Persist a new calibration constant and switch to it immediately. Skips
+// the NVS write if the values already match, since the source command is a
+// retained MQTT message that redelivers on every reconnect and flash write
+// endurance is finite.
+static void applyCalibrationUpdate(float gain, float offset) {
+  if (gain == calGainKvPerMv && offset == calOffsetKv) {
+    return;
+  }
+  calGainKvPerMv = gain;
+  calOffsetKv = offset;
+  calibPrefs.begin("fence-cal", false);
+  calibPrefs.putFloat("gain", gain);
+  calibPrefs.putFloat("offset", offset);
+  calibPrefs.end();
+  Serial.printf("calibration updated: gain=%.6f offset=%.4f\n", gain, offset);
+}
+
+// PubSubClient's callback for the bounded fence/<node_id>/calib/set check
+// in checkCalibrationUpdate(). Global rather than a lambda/capture because
+// PubSubClient's callback signature carries no user context pointer.
+static void mqttCallback(char *topic, uint8_t *payload, unsigned int length) {
+  (void)topic;
+  JsonDocument doc;
+  if (deserializeJson(doc, payload, length) != DeserializationError::Ok) {
+    return;
+  }
+  if (!doc["kv_per_mv"].is<float>() || !doc["kv_offset"].is<float>()) {
+    return;
+  }
+  calibUpdateGain = doc["kv_per_mv"].as<float>();
+  calibUpdateOffset = doc["kv_offset"].as<float>();
+  calibUpdateReceived = true;
 }
 
 static FenceStatus classifyStatus(float fenceKv) {
@@ -135,9 +212,13 @@ static bool syncTimeGetEpoch(time_t *outEpoch) {
   return true;
 }
 
+// Leaves the MQTT connection open on success so checkCalibrationUpdate()
+// can reuse it without paying for a second TCP handshake; the caller is
+// responsible for the final mqtt.disconnect().
 static bool publishState(const char *nodeId, uint32_t fenceMv, float fenceKv,
                          float battV, int32_t rssi, uint32_t wifiMs) {
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setCallback(mqttCallback);
 
   bool connected;
   if (strlen(MQTT_USER) > 0) {
@@ -180,11 +261,90 @@ static bool publishState(const char *nodeId, uint32_t fenceMv, float fenceKv,
   if (ok) {
     Serial.printf("published %s %s\n", topic, payload);
   }
-  // Give the TCP stack a moment to flush before we tear everything down.
+  // Give the TCP stack a moment to flush. Connection is left open — see
+  // the function comment above.
   mqtt.loop();
   delay(50);
-  mqtt.disconnect();
   return ok;
+}
+
+// Bounded check for a retained calibration update, reusing the still-open
+// MQTT connection from a just-completed publishState(). One report-cycle
+// lag to apply is an acceptable tradeoff for not reordering the Phase 2
+// sample-before-radio flow.
+static void checkCalibrationUpdate(const char *nodeId) {
+  char topic[64];
+  snprintf(topic, sizeof(topic), "fence/%s/calib/set", nodeId);
+  calibUpdateReceived = false;
+  mqtt.subscribe(topic);
+  const uint32_t start = millis();
+  while (millis() - start < CALIB_SET_CHECK_MS && !calibUpdateReceived) {
+    mqtt.loop();
+    delay(20);
+  }
+  mqtt.unsubscribe(topic);
+  if (calibUpdateReceived) {
+    applyCalibrationUpdate(calibUpdateGain, calibUpdateOffset);
+  }
+}
+
+// Calibration mode: entered instead of the normal sample/report/sleep loop
+// when PIN_CALIB_MODE is held LOW at boot. Streams fast readings (serial +
+// MQTT, unretained) while someone at the fence compares against the
+// handheld tester; exits by releasing the pin. See firmware/README.md's
+// Calibration section for the full workflow, including the offline
+// multi-point fit tool and how the result gets back onto the node.
+static void runCalibrationMode(const char *nodeId) {
+  Serial.println("=== calibration mode ===");
+  Serial.printf("current gain=%.6f offset=%.4f\n", calGainKvPerMv, calOffsetKv);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  const uint32_t wifiStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_TIMEOUT_MS) {
+    delay(100);
+  }
+  const bool wifiOk = WiFi.status() == WL_CONNECTED;
+  if (wifiOk) {
+    mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    bool mqttOk;
+    if (strlen(MQTT_USER) > 0) {
+      mqttOk = mqtt.connect(nodeId, MQTT_USER, MQTT_PASSWORD);
+    } else {
+      mqttOk = mqtt.connect(nodeId);
+    }
+    Serial.printf("wifi up; mqtt %s\n", mqttOk ? "connected" : "failed, streaming to serial only");
+  } else {
+    Serial.println("wifi failed; streaming to serial only");
+  }
+
+  char topic[64];
+  snprintf(topic, sizeof(topic), "fence/%s/calib", nodeId);
+  uint32_t n = 0;
+  while (digitalRead(PIN_CALIB_MODE) == LOW) {
+    const uint32_t fenceMv = sampleFencePeakMv(CALIB_SAMPLE_WINDOW_MS);
+    const float fenceKv = fenceMv * calGainKvPerMv + calOffsetKv;
+    ++n;
+    Serial.printf("calib #%u: adc_mv=%u kv=%.3f\n", n, fenceMv, fenceKv);
+
+    if (wifiOk && mqtt.connected()) {
+      JsonDocument doc;
+      doc["adc_mv"] = fenceMv;
+      doc["kv"] = roundf(fenceKv * 100.0f) / 100.0f;
+      doc["n"] = n;
+      char payload[128];
+      const size_t len = serializeJson(doc, payload, sizeof(payload));
+      mqtt.publish(topic, reinterpret_cast<const uint8_t *>(payload), len, false);
+      mqtt.loop();
+    }
+    delay(CALIB_PUBLISH_INTERVAL_MS);
+  }
+
+  Serial.println("calibration mode exited, rebooting into normal operation");
+  Serial.flush();
+  mqtt.disconnect();
+  WiFi.disconnect(true);
+  esp_restart();
 }
 
 static void goToSleep() {
@@ -197,19 +357,30 @@ static void goToSleep() {
 }
 
 void setup() {
-  ++bootCount;
   Serial.begin(115200);
   char nodeId[13];
   formatNodeId(nodeId, sizeof(nodeId));
-  Serial.printf("\n%s fw %s boot %u\n", nodeId, FW_VERSION, bootCount);
 
   analogSetPinAttenuation(PIN_FENCE_ADC, ADC_11db);  // full 0-3.3 V range
   analogSetPinAttenuation(PIN_BATT_ADC, ADC_11db);
+  loadCalibration();
+
+  // Held LOW at boot (e.g. the devkit's BOOT button): enter calibration
+  // mode instead of the normal cycle. Checked before bootCount increments
+  // and before deep sleep is ever considered — this is a deliberately
+  // separate, attended path, not a wake cycle.
+  pinMode(PIN_CALIB_MODE, INPUT_PULLUP);
+  if (digitalRead(PIN_CALIB_MODE) == LOW) {
+    runCalibrationMode(nodeId);  // never returns: reboots on exit
+  }
+
+  ++bootCount;
+  Serial.printf("\n%s fw %s boot %u\n", nodeId, FW_VERSION, bootCount);
 
   // Sample before bringing the radio up: less supply noise on the ADC and
   // no radio drawing current during the multi-second window.
-  const uint32_t fenceMv = sampleFencePeakMv();
-  const float fenceKv = fenceMv * CAL_KV_PER_MV + CAL_KV_OFFSET;
+  const uint32_t fenceMv = sampleFencePeakMv(SAMPLE_WINDOW_MS);
+  const float fenceKv = fenceMv * calGainKvPerMv + calOffsetKv;
   const float battV = readBatteryVolts();
   Serial.printf("fence %u mV (%.2f kV), batt %.2f V\n", fenceMv, fenceKv,
                 battV);
@@ -238,6 +409,11 @@ void setup() {
     Serial.printf("wifi up in %u ms, rssi %d dBm\n", wifiMs,
                   static_cast<int>(rssi));
     published = publishState(nodeId, fenceMv, fenceKv, battV, rssi, wifiMs);
+    if (published) {
+      // Reuses the still-open connection from publishState() above.
+      checkCalibrationUpdate(nodeId);
+    }
+    mqtt.disconnect();
   } else {
     Serial.println("wifi connect timed out");
   }

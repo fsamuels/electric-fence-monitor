@@ -32,13 +32,24 @@
 #define BATT_SAMPLES 8
 
 // --- Calibration (per node) ---
-// kv = adc_mv * CAL_KV_PER_MV + CAL_KV_OFFSET
-// Theoretical divider math: 10 kV across 1 GΩ + 270 kΩ gives ~2.70 V at
-// the ADC, i.e. 0.003704 kV/mV. Resistor tolerance stacking makes this
-// a starting point only — replace with the constant derived against the
-// handheld tester and record it in docs/calibration.md.
+// kv = adc_mv * gain + offset. These are only the *cold-start* defaults:
+// once a calibration has been derived and pushed over MQTT (see
+// firmware/README.md#calibration), the real values live in NVS and these
+// constants are never read again on that node. Theoretical divider math:
+// 10 kV across 1 GΩ + 270 kΩ gives ~2.70 V at the ADC, i.e. 0.003704 kV/mV.
+// Resistor tolerance stacking makes this a starting point only.
 #define CAL_KV_PER_MV 0.003704f
 #define CAL_KV_OFFSET 0.0f
+
+// --- Calibration mode ---
+// Hold this pin LOW at boot/reset (e.g. the devkit's BOOT button) to enter
+// calibration mode instead of the normal sample/report/sleep loop. See
+// firmware/README.md#calibration.
+#define PIN_CALIB_MODE 0
+// Shorter than SAMPLE_WINDOW_MS: calibration mode is attended and wants
+// responsive feedback, not the normal cycle's power-conscious window.
+#define CALIB_SAMPLE_WINDOW_MS 500
+#define CALIB_PUBLISH_INTERVAL_MS 1000
 
 // Battery sense divider ratio (two equal resistors = 2.0).
 #define BATT_DIVIDER_RATIO 2.0f
