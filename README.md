@@ -5,7 +5,7 @@ Remote, battery/solar-powered electric fence voltage monitor for Reign Cloud Ran
 **Status:** hardware is still design-phase (no unit built yet); the dashboard is well ahead of it, built against mock data using the firmware's real MQTT contract. See [docs/current-status.md](docs/current-status.md) for exactly what's done vs. open, or the plans below for full detail:
 
 - [Hardware development plan](docs/hardware-plan.md) — design phase, nothing physically built yet
-- [Software development plan](docs/software-plan.md) — firmware Phase 1 has working code, Phase 2 (duty-cycle split) is complete; see [firmware/README.md](firmware/README.md)
+- [Software development plan](docs/software-plan.md) — firmware Phases 1–3 (ADC read, duty-cycle split, calibration mode) are complete except `temp_c` logging, blocked on a hardware sensor decision; see [firmware/README.md](firmware/README.md)
 - [Dashboard development plan](docs/dashboard-plan.md) — Phases D0–D5 complete (see [docs/current-status.md](docs/current-status.md)); built ahead of hardware, against mock data
 - [Architecture overview](docs/architecture.md) — current-state summary of the dashboard stack
 - [Roadmap](docs/roadmap.md) — prioritized upcoming work
@@ -245,7 +245,9 @@ docs/
   hardware-plan.md        Phased hardware development plan
   software-plan.md        Phased software development plan (firmware + backend)
   dashboard-plan.md       Dashboard architecture + phased plan (mock data, ahead of hardware)
+  calibration.md          Per-node calibration records (adc_mv/handheld-kV points, fitted gain/offset)
 firmware/                 ESP32 node firmware (PlatformIO/Arduino) — see firmware/README.md
+  tools/fit_calibration.py  Least-squares gain/offset fit from calibration points
 dashboard/                 Web dashboard: Mosquitto + FastAPI + Postgres/TimescaleDB + React/TS — see docs/dashboard-plan.md
 hardware/
   pcb-design-plan.md            Custom PCB scope, sequencing, tool choice, JLCPCB fab walkthrough
@@ -253,5 +255,3 @@ hardware/
   logic-power-board-schematic.md  Logic & Power board — the actual PCB target, with BOM
   images/                       Rendered schematic images + the script that generates them
 ```
-
-Planned as the project progresses: `docs/calibration.md` (per-node calibration records).

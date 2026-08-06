@@ -16,10 +16,10 @@ visibility + alerting) fastest, not by document order. See
 
 - **Hardware Phase 2 — Peak detector RC tuning** (empirical, breadboard-based).
 - **Hardware Phase 3 — Power system** (battery/solar budget, real energy-per-wake-cycle measurement — this is also what validates or invalidates the cadence recommendation in [dashboard-plan.md#reporting-cadence-and-alert-latency](dashboard-plan.md#reporting-cadence-and-alert-latency)).
-- **Firmware Phase 3 — Calibration support** (calibration mode, multi-point fit, NVS-stored on-node constant, `temp_c` logging).
+- **Firmware Phase 3's `temp_c` logging** _(blocked on hardware)_ — the rest of Phase 3 (calibration mode, multi-point fit, NVS-stored on-node constant) is done; only enclosure temperature logging remains, and it needs a sensor choice (TMP102 vs DS18B20) that's still an open PCB-layout decision.
 - **Firmware Phase 4 — Hardening & OTA** (OTA updates, watchdog/brown-out handling, Wi-Fi backoff, buffered readings across outages).
 - **Hardware Phase 4 — Integrated prototype & calibration** (first end-to-end real node).
-- **Dashboard Phase D6 — Real hardware cutover** _(blocked on hardware Phase 4/6; firmware Phase 2 has landed)_. Not a config change — re-tune every time-based threshold against the real ~15 min report cadence, retire mock nodes, insert real calibration rows, bind the first real node to a location.
+- **Dashboard Phase D6 — Real hardware cutover** _(blocked on hardware Phase 4/6; firmware Phases 2–3 have landed)_. Not a config change — re-tune every time-based threshold against the real ~15 min report cadence, retire mock nodes, insert real calibration rows, bind the first real node to a location.
 
 ## Long-term
 
@@ -31,7 +31,7 @@ visibility + alerting) fastest, not by document order. See
 
 ## Technical debt
 
-- **`docs/software-plan.md` phase checkboxes are partially stale** relative to actual firmware/dashboard progress — Firmware Phase 2 is now checked, but Phase 1 and the dashboard Phase 5 checkboxes still lag. Needs a full sync pass once D5.5 lands, or an explicit note pointing readers at `dashboard-plan.md`/`firmware/README.md` as the current trackers.
+- **`docs/software-plan.md` phase checkboxes are partially stale** relative to actual firmware/dashboard progress — Firmware Phases 2 and 3 are now checked (`temp_c` correctly left open), but Phase 1 and the dashboard Phase 5 checkboxes still lag. Needs a full sync pass once D5.5 lands, or an explicit note pointing readers at `dashboard-plan.md`/`firmware/README.md` as the current trackers.
 - **No per-node MQTT credentials/broker ACLs** — anonymous access is fine on a trusted LAN today but is a named prerequisite before any wider deployment.
 - **No API authentication or TLS** — same category as above.
 - **`docker-compose.yml` now runs 7 services** (broker, db, migrate, api, ingest, mock-publisher, frontend); some plan text still says "six" from before `ingest` was split into its own container — cosmetic, worth fixing when touching that section.

@@ -1,6 +1,6 @@
 # Firmware
 
-Firmware for the fence monitor node (software plan Phases 1–2): wake every `SAMPLE_INTERVAL_S`, multi-sample the peak detector output and take the max, read battery voltage. Most wakes go straight back to sleep; only every `REPORT_INTERVAL_S`, or immediately when a reading crosses a fault threshold, does it bring up Wi-Fi and publish a retained JSON state message over MQTT. See [Duty cycle](#duty-cycle) below.
+Firmware for the fence monitor node (software plan Phases 1–3): wake every `SAMPLE_INTERVAL_S`, multi-sample the peak detector output and take the max, read battery voltage. Most wakes go straight back to sleep; only every `REPORT_INTERVAL_S`, or immediately when a reading crosses a fault threshold, does it bring up Wi-Fi and publish a retained JSON state message over MQTT. See [Duty cycle](#duty-cycle) below. A held pin at boot instead enters [calibration mode](#calibration).
 
 ## Setup
 
@@ -51,7 +51,7 @@ See
 ```json
 {
   "node_id": "a4c1385f2b10",
-  "fw": "0.2.0",
+  "fw": "0.3.0",
   "kv": 6.93,
   "adc_mv": 1872,
   "batt_v": 3.98,
@@ -69,7 +69,7 @@ See
 | Field | Meaning |
 |---|---|
 | `node_id` | ESP32 MAC-derived hardware identity; also the MQTT topic segment |
-| `kv` | Calibrated fence voltage (`adc_mv * CAL_KV_PER_MV + CAL_KV_OFFSET`) |
+| `kv` | On-node fence voltage estimate (`adc_mv * gain + offset`, from NVS — see [Calibration](#calibration)). Advisory only; the backend recomputes its own authoritative kV from `adc_mv` |
 | `adc_mv` | Raw max millivolts seen at the ADC over the sample window — kept in the payload so calibration can be redone from history |
 | `batt_v` | Battery voltage via divider on `PIN_BATT_ADC` |
 | `rssi` | Wi-Fi signal at this wake — feeds the antenna-vs-LoRa decision |
@@ -98,9 +98,56 @@ Feed a known DC level (0–3 V, e.g. from a bench supply or a potentiometer acro
 
 ## Calibration
 
-`CAL_KV_PER_MV` defaults to the theoretical divider ratio (0.003704 kV/mV). After the hardware Phase 4 calibration against the handheld tester, replace it per node/assignment and record the derivation in [`docs/calibration.md`](../docs/calibration.md).
+`CAL_KV_PER_MV`/`CAL_KV_OFFSET` in `config.h` (0.003704 kV/mV, the
+theoretical divider ratio) are **cold-start defaults only**. The real
+per-node `gain`/`offset` lives in NVS once a calibration has been derived
+and pushed — editing `config.h` and reflashing has no effect on a node
+that's already been calibrated.
+
+This on-node value is not the backend's authoritative kV — the dashboard
+recomputes that separately, at query time, from a versioned `calibrations`
+table (`docs/dashboard-plan.md#calibration`). The on-node constant only
+needs to be good enough for this node's own fault-threshold check
+(`LOW_KV_THRESHOLD`/`DOWN_KV_THRESHOLD`, [Duty cycle](#duty-cycle)), so it
+can be coarse.
+
+**Entering calibration mode:** hold `PIN_CALIB_MODE` (default GPIO0, the
+devkit's BOOT button) LOW at boot/reset. The node skips the normal
+sample/report/sleep loop entirely, connects Wi-Fi/MQTT once, and while the
+pin stays low streams a fast reading (`CALIB_SAMPLE_WINDOW_MS` window, once
+every `CALIB_PUBLISH_INTERVAL_MS`) to both serial and an **unretained**
+`fence/<node_id>/calib` topic (`{"adc_mv", "kv", "n"}`) — enough to work
+from just a laptop's serial monitor, no MQTT client required. Releasing the
+pin reboots the node back into normal operation. (An MQTT-triggered
+alternative — publishing a command to start calibration remotely — was
+considered but not built: it would need the node to keep a persistent MQTT
+subscription alive well beyond a normal report wake, cutting against the
+whole sample-cheap/report-rarely design from Phase 2. Calibration is an
+attended, at-the-fence activity anyway.)
+
+**Deriving and applying the fit:** collect 3–5 `(adc_mv, handheld_tester_kv)`
+pairs from the stream above, spread across 5–10 kV, then run
+[`tools/fit_calibration.py`](tools/fit_calibration.py) (stdlib-only linear
+least-squares — no numpy dependency for a bench tool):
+
+```sh
+python3 tools/fit_calibration.py 1872:6.93 2010:7.40 1350:5.10 --node-id a4c1385f2b10
+```
+
+It prints the fitted `gain`/`offset`, residuals against each point (to
+sanity-check linearity), and the `mosquitto_pub` command line to publish
+them **retained** to `fence/<node_id>/calib/set`. The node picks up a
+retained command on its next report wake (checked in a bounded ~300 ms
+window right after publishing state, reusing that connection rather than
+paying for a second one), writes it to NVS, and uses it from then on.
+
+Record every derived calibration in [`docs/calibration.md`](../docs/calibration.md), keyed on `(node_id, location_id, date)` — a board swap or relocation each invalidate a prior calibration.
 
 ## Not yet implemented (later phases)
 
-- Calibration mode with rapid streamed readings (Phase 3)
+- **Enclosure temperature (`temp_c`) logging (Phase 3).** Blocked on
+  hardware: no temperature sensor exists yet, and the ESP32's internal one
+  is explicitly ruled out (self-heated, too poor). Sensor choice (TMP102 vs
+  DS18B20) is still an open PCB-layout decision — see
+  `hardware/pcb-design-plan.md`'s "Temperature sensor footprint" note.
 - OTA updates, watchdog/brown-out handling, Wi-Fi outage backoff, buffered readings across failed transmits (Phase 4)

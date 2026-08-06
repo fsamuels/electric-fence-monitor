@@ -1,11 +1,11 @@
 # Current Status
 
-_Last updated: 2026-08-05, after Firmware Phase 2 (sample/report duty-cycle split)._
+_Last updated: 2026-08-06, after Firmware Phase 3 (calibration mode)._
 
 ## Where things stand
 
 - **Hardware**: design phase only. No physical unit has been built; Phases 0–6 in [hardware-plan.md](hardware-plan.md) are all still open. The custom PCB ([hardware/logic-power-board-schematic.md](../hardware/logic-power-board-schematic.md)) and the hand-wired HV sensing chain ([hardware/voltage-divider-schematic.md](../hardware/voltage-divider-schematic.md)) are designed on paper but unvalidated on a breadboard.
-- **Firmware**: covers software-plan Phases 1–2, including the split sample/report duty cycle — wake every `SAMPLE_INTERVAL_S`, multi-sample ADC peak read, battery read; publish retained MQTT state only every `REPORT_INTERVAL_S` or immediately on a fault-threshold crossing (RTC-held state), with `ts`/`seq`/`sample_interval_s`/`report_interval_s` now in the payload. See [firmware/README.md](../firmware/README.md) and `firmware/src/main.cpp`. Calibration mode (Phase 3) and hardening/OTA (Phase 4) are not implemented.
+- **Firmware**: covers software-plan Phases 1–3. Phase 2's split sample/report duty cycle (`SAMPLE_INTERVAL_S`/`REPORT_INTERVAL_S`, RTC-held fault-threshold edge-triggering) and Phase 3's calibration mode (held-pin trigger, NVS-backed gain/offset updatable over a retained MQTT command, offline multi-point fit tool) are both done — see [firmware/README.md](../firmware/README.md) and `firmware/src/main.cpp`. **`temp_c` logging (part of Phase 3) is blocked on hardware**: no temperature sensor exists yet, still an open PCB-layout decision. Hardening/OTA (Phase 4) is not implemented.
 - **Dashboard**: the most mature part of the project. Built entirely ahead of hardware against mock data, using the firmware's real MQTT contract. **Phases D0–D5 are complete**; D5.5 and D6 are not started. See [dashboard-plan.md](dashboard-plan.md) for full phase detail.
 
 ## Features completed (dashboard D0–D5)
@@ -21,19 +21,21 @@ _Last updated: 2026-08-05, after Firmware Phase 2 (sample/report duty-cycle spli
 ## Features in progress / not started
 
 - ⬜ **Phase D5.5 — Minimal push alerting.** No `status_transitions` table, no scheduler, no notification channel (ntfy/Pushover), no dead-man's switch. This is the project's stated primary requirement and isn't built yet — see [Recommended next actions](#recommended-next-actions).
-- ⬜ **Phase D6 — Real hardware cutover.** Firmware Phase 2 has landed; still blocked on hardware Phase 4/6. Nothing to do here until hardware exists.
-- ⬜ **Firmware Phase 3 (calibration mode) and Phase 4 (OTA/watchdog/backoff/buffered readings)** — not started.
+- ⬜ **Phase D6 — Real hardware cutover.** Firmware Phases 2–3 have landed; still blocked on hardware Phase 4/6. Nothing to do here until hardware exists.
+- ⬜ **Firmware Phase 3's `temp_c` logging** — blocked on hardware (no temperature sensor exists; sensor choice is still an open PCB-layout decision).
+- ⬜ **Firmware Phase 4 (OTA/watchdog/backoff/buffered readings)** — not started.
 - ⬜ **Hardware Phases 0–6** — parts sourcing through field deployment, all open. Highest-risk item (peak detector RC tuning) hasn't been touched on a breadboard yet.
 
 ## Known issues / open technical concerns
 
-- **`docs/software-plan.md`'s phase checkboxes are partially stale.** Firmware Phase 2 is now checked, but Phase 1 items are still unchecked despite the corresponding firmware code existing, and its Phase 5 (Backend Bring-Up) checkboxes don't reflect that D0–D5 are done. Treat `dashboard-plan.md` as the authoritative tracker for dashboard work; don't infer dashboard status from `software-plan.md`.
+- **`docs/software-plan.md`'s phase checkboxes are partially stale.** Firmware Phases 2 and 3 are now checked (except `temp_c`, correctly left open), but Phase 1 items are still unchecked despite the corresponding firmware code existing, and its Phase 5 (Backend Bring-Up) checkboxes don't reflect that D0–D5 are done. Treat `dashboard-plan.md` as the authoritative tracker for dashboard work; don't infer dashboard status from `software-plan.md`.
 - **No security hardening yet**, by design but still a real gap against the project's "check remotely" goal: anonymous MQTT, no per-node broker ACLs/credentials, no API auth, no TLS, no VPN/remote-access path. Fine for the current trusted-LAN dev setup; a hard blocker before any off-property or public-internet use.
 - **Deployment target undecided** (Raspberry Pi vs. cloud VM vs. NAS) — deliberately deferred; Docker Compose keeps all options open.
 - **Mock-vs-real time gap is large (~60×)** and has to be re-validated at the real cadence (`--cadence realtime`) before cutover — chart ranges, `silent` timeouts, and consecutive-reading debounce were tuned primarily against fast mock data.
 
 ## Recent major changes
 
+- **2026-08-06 — Firmware Phase 3 (calibration mode)**: held-pin (`PIN_CALIB_MODE`) calibration mode streaming fast readings to serial and an unretained `fence/<node_id>/calib` topic; NVS-backed on-node `gain`/`offset` (cold-start default from `config.h`, real value updatable via a retained `fence/<node_id>/calib/set` MQTT command checked on each report wake); `firmware/tools/fit_calibration.py` for an offline multi-point least-squares fit; new `docs/calibration.md` log. `temp_c` logging deliberately not implemented — no hardware temperature sensor exists yet. See `firmware/src/main.cpp` and [firmware/README.md#calibration](../firmware/README.md#calibration).
 - **2026-08-05 — Firmware Phase 2 duty-cycle split**: replaced the single `SLEEP_INTERVAL_S` with `SAMPLE_INTERVAL_S`/`REPORT_INTERVAL_S`, RTC-held fault-status edge-triggering for immediate out-of-band reports, and `ts`/`seq`/`sample_interval_s`/`report_interval_s` in the payload (best-effort NTP for `ts`). Backend ingest already handled all four fields, so this needed no backend changes. See `firmware/src/main.cpp` and [dashboard-plan.md#reporting-cadence-and-alert-latency](dashboard-plan.md#reporting-cadence-and-alert-latency).
 - **2026-08-05 — Dashboard Phase D5 (Multi-node & live updates)**: added `GET /nodes/{node_id}` (assignment + calibration history), unassigned-node inbox, assignment/reassignment dialog, link-quality indicators, "Log a change" fence-event form, node detail timeline modal, and live-refreshing per-card charts. See branch `feature/dashboard-d5-multi-node`.
 - Prior: Phases D0 (scaffolding) → D1 (data contract/storage) → D2 (mock publisher) → D3 (API) → D4 (frontend MVP) landed sequentially; see git history and `dashboard-plan.md` for phase-by-phase detail.
