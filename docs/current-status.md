@@ -1,6 +1,6 @@
 # Current Status
 
-_Last updated: 2026-08-05, after Dashboard Phase D5 (Multi-node & live updates)._
+_Last updated: 2026-08-05, after Firmware Phase 2 (sample/report duty-cycle split)._
 
 ## Where things stand
 
@@ -21,13 +21,13 @@ _Last updated: 2026-08-05, after Dashboard Phase D5 (Multi-node & live updates).
 ## Features in progress / not started
 
 - ⬜ **Phase D5.5 — Minimal push alerting.** No `status_transitions` table, no scheduler, no notification channel (ntfy/Pushover), no dead-man's switch. This is the project's stated primary requirement and isn't built yet — see [Recommended next actions](#recommended-next-actions).
-- ⬜ **Phase D6 — Real hardware cutover.** Blocked on hardware Phase 4/6 and firmware Phase 2 landing. Nothing to do here until hardware exists.
+- ⬜ **Phase D6 — Real hardware cutover.** Firmware Phase 2 has landed; still blocked on hardware Phase 4/6. Nothing to do here until hardware exists.
 - ⬜ **Firmware Phase 3 (calibration mode) and Phase 4 (OTA/watchdog/backoff/buffered readings)** — not started.
 - ⬜ **Hardware Phases 0–6** — parts sourcing through field deployment, all open. Highest-risk item (peak detector RC tuning) hasn't been touched on a breadboard yet.
 
 ## Known issues / open technical concerns
 
-- **`docs/software-plan.md`'s phase checkboxes are stale.** Its Firmware Phase 1–2 items are unchecked despite the corresponding firmware code existing, and its Phase 5 (Backend Bring-Up) checkboxes don't reflect that D0–D5 are done. Treat `dashboard-plan.md` as the authoritative tracker for dashboard work; don't infer dashboard status from `software-plan.md`.
+- **`docs/software-plan.md`'s phase checkboxes are partially stale.** Firmware Phase 2 is now checked, but Phase 1 items are still unchecked despite the corresponding firmware code existing, and its Phase 5 (Backend Bring-Up) checkboxes don't reflect that D0–D5 are done. Treat `dashboard-plan.md` as the authoritative tracker for dashboard work; don't infer dashboard status from `software-plan.md`.
 - **No security hardening yet**, by design but still a real gap against the project's "check remotely" goal: anonymous MQTT, no per-node broker ACLs/credentials, no API auth, no TLS, no VPN/remote-access path. Fine for the current trusted-LAN dev setup; a hard blocker before any off-property or public-internet use.
 - **Deployment target undecided** (Raspberry Pi vs. cloud VM vs. NAS) — deliberately deferred; Docker Compose keeps all options open.
 - **Mock-vs-real time gap is large (~60×)** and has to be re-validated at the real cadence (`--cadence realtime`) before cutover — chart ranges, `silent` timeouts, and consecutive-reading debounce were tuned primarily against fast mock data.
