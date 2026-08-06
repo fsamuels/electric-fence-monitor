@@ -5,7 +5,7 @@ Remote, battery/solar-powered electric fence voltage monitor for Reign Cloud Ran
 **Status:** hardware is still design-phase (no unit built yet); the dashboard is well ahead of it, built against mock data using the firmware's real MQTT contract. See [docs/current-status.md](docs/current-status.md) for exactly what's done vs. open, or the plans below for full detail:
 
 - [Hardware development plan](docs/hardware-plan.md) — design phase, nothing physically built yet
-- [Software development plan](docs/software-plan.md) — firmware Phases 1–2 have working code; see [firmware/README.md](firmware/README.md)
+- [Software development plan](docs/software-plan.md) — firmware Phase 1 has working code, Phase 2 (duty-cycle split) is complete; see [firmware/README.md](firmware/README.md)
 - [Dashboard development plan](docs/dashboard-plan.md) — Phases D0–D5 complete (see [docs/current-status.md](docs/current-status.md)); built ahead of hardware, against mock data
 - [Architecture overview](docs/architecture.md) — current-state summary of the dashboard stack
 - [Roadmap](docs/roadmap.md) — prioritized upcoming work
@@ -139,6 +139,7 @@ Full plan, including the firmware toolchain and backend decisions, in [docs/soft
 - Wi-Fi (ESP32 built-in) as primary connectivity, leveraging existing mesh network coverage.
 - Alerts delivered both ways: a dashboard to check anytime, **and** push/active alerts on threshold drop or full outage.
 - Firmware ADC strategy: multi-sample over a 2–3 s window and take the max (see peak detector section above).
+- Firmware duty cycle: sample the fence every `SAMPLE_INTERVAL_S` (radio off, cheap) but only publish over Wi-Fi/MQTT every `REPORT_INTERVAL_S`, or immediately on a fault-threshold crossing — see [firmware/README.md#duty-cycle](firmware/README.md#duty-cycle).
 - Voltage conversion: a firmware/backend calibration constant maps raw ADC readings to actual kV, calibrated against a known handheld fence tester rather than trusting divider math alone — resistor tolerance stacking across 10 series resistors introduces cumulative error.
 
 **Backend: decided.** Custom stack — Mosquitto + Postgres/TimescaleDB + FastAPI + React/TypeScript, not Home Assistant. Being built now, ahead of hardware, against mock MQTT data using the firmware's real payload contract. Chosen for control over the end state and transferable skills, accepting more operational surface and having to build the push alerting Home Assistant gives away. Full rationale and architecture in [docs/dashboard-plan.md](docs/dashboard-plan.md).

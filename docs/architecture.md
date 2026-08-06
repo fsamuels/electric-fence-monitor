@@ -51,7 +51,7 @@ point of building the dashboard ahead of hardware.
 | Component | Responsibility | Path |
 |---|---|---|
 | **Contract** | Single source of truth for the MQTT payload shape; validated in CI against example payloads | [contract/](../contract/) |
-| **Firmware** | ESP32 node: read sensing chain, publish retained state, deep sleep | [firmware/](../firmware/) |
+| **Firmware** | ESP32 node: read sensing chain every `SAMPLE_INTERVAL_S`, publish retained state every `REPORT_INTERVAL_S` (or immediately on a fault-threshold crossing), deep sleep between wakes | [firmware/](../firmware/) |
 | **Mock publisher** | Simulates 1–5 fake nodes across every fault scenario, in live (MQTT) or backfill (direct-to-Postgres) mode | [dashboard/mock-publisher/](../dashboard/mock-publisher/) |
 | **Mosquitto broker** | MQTT transport, `fence/<node_id>/state`, retained QoS 0 | `dashboard/docker-compose.yml` (`broker` service) |
 | **Ingest service** | Subscribes to `fence/+/state`, validates against the contract schema, writes to Postgres. Runs as its own container (not a FastAPI background task) so a dead subscriber can't masquerade as a healthy fence | `dashboard/backend/app/ingest.py` |
@@ -102,5 +102,5 @@ Everything runs as seven Docker Compose services (`dashboard/docker-compose.yml`
 
 - **Phase D5.5 (push alerting) not built.** No `status_transitions` table, no scheduler, no notification channel, no dead-man's switch. Until it exists, a fault at 2 a.m. is invisible until someone opens the dashboard.
 - **Security is deferred by design, not by accident**, but is real debt against the "check remotely" goal: anonymous MQTT, no per-node broker ACLs, no API auth, no TLS, no remote-access story (Tailscale/WireGuard) yet. Fine on a trusted LAN; blocking for any off-property access.
-- **`docs/software-plan.md`'s own phase checkboxes are stale** relative to actual progress — it points at `dashboard-plan.md` for Phase 5 status (which is current), but its Firmware Phase 1–2 checkboxes are unchecked despite working firmware code existing. Treat `dashboard-plan.md` as the authoritative phase tracker for dashboard work and `firmware/README.md` for firmware status; `software-plan.md`/`hardware-plan.md` are the higher-level plans, not up-to-date trackers.
+- **`docs/software-plan.md`'s own phase checkboxes are partially stale** relative to actual progress — it points at `dashboard-plan.md` for Phase 5 status (which is current), and Firmware Phase 2 is now checked off, but Firmware Phase 1 checkboxes are still unchecked despite working code existing for all of it. Treat `dashboard-plan.md` as the authoritative phase tracker for dashboard work and `firmware/README.md` for firmware status; `software-plan.md`/`hardware-plan.md` are the higher-level plans, not up-to-date trackers.
 - **No frontend routing** — the dashboard is a single page (`Dashboard.tsx`); node detail and dialogs are modal overlays with local component state rather than routed views. Fine at the current scale (a handful of locations); would need revisiting if the UI grows more sections.
