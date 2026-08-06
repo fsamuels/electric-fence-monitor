@@ -1,8 +1,11 @@
-// Fence voltage monitor node — first pass.
+// Fence voltage monitor node.
 //
-// Wake → sample fence ADC (multi-sample/max over a window covering at
-// least one charger pulse) → read battery → connect Wi-Fi (bounded) →
-// publish retained JSON state over MQTT → deep sleep.
+// Wakes every SAMPLE_INTERVAL_S to sample the fence ADC (radio off, cheap).
+// Only brings up Wi-Fi/MQTT — the expensive ~4x part — every
+// REPORT_INTERVAL_S, or immediately when a sample crosses a fault threshold.
+// See docs/dashboard-plan.md#reporting-cadence-and-alert-latency for why:
+// sampling often and talking rarely gives the same fault-detection latency
+// as reporting every minute at roughly a third of the energy.
 //
 // The charger pulse is held by the hardware peak detector as a slowly
 // decaying quasi-DC level; sampling continuously for SAMPLE_WINDOW_MS and
@@ -17,15 +20,31 @@
 #include <esp_sleep.h>
 
 #include <cstdio>
+#include <ctime>
 
 #include "config.h"
 
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.2.0"
+
+enum FenceStatus : uint8_t { STATUS_NORMAL = 0, STATUS_LOW = 1, STATUS_DOWN = 2 };
 
 // Survives deep sleep (not power loss) — lets the backend spot resets and
 // gives a cheap local record of publish failures between successful reports.
 RTC_DATA_ATTR uint32_t bootCount = 0;
 RTC_DATA_ATTR uint32_t failedPublishes = 0;
+
+// Time accumulated since the last successful report, in sample-interval
+// steps — the wake granularity is now SAMPLE_INTERVAL_S, not
+// REPORT_INTERVAL_S, so this is how a report-due wake is recognized.
+RTC_DATA_ATTR uint32_t secondsSinceReport = REPORT_INTERVAL_S;
+// The fault status as of the last *reported* reading. Reporting is
+// edge-triggered off this: a sample-only wake that finds the status
+// unchanged stays silent, but any transition forces an immediate report.
+RTC_DATA_ATTR uint8_t lastReportedStatus = STATUS_NORMAL;
+// Monotonic per-node reading counter, reserved in the contract for future
+// QoS-1 dedup; increments once per publish attempt (gaps from a lost publish
+// are expected under QoS 0), resets with boot.
+RTC_DATA_ATTR uint32_t seqCounter = 0;
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
@@ -61,6 +80,16 @@ static uint32_t sampleFencePeakMv() {
   return maxMv;
 }
 
+static FenceStatus classifyStatus(float fenceKv) {
+  if (fenceKv < DOWN_KV_THRESHOLD) {
+    return STATUS_DOWN;
+  }
+  if (fenceKv < LOW_KV_THRESHOLD) {
+    return STATUS_LOW;
+  }
+  return STATUS_NORMAL;
+}
+
 static float readBatteryVolts() {
   uint32_t sumMv = 0;
   for (int i = 0; i < BATT_SAMPLES; ++i) {
@@ -84,6 +113,28 @@ static bool connectWifi() {
   return true;
 }
 
+// Best-effort NTP sync so the reading can carry a real `ts`. Bounded so a
+// slow/unreachable NTP server doesn't eat into the battery budget on top of
+// the Wi-Fi timeout already spent. Returns false (no ts sent) on timeout —
+// the backend falls back to receive time, same as it does for mock data
+// that omits ts today.
+static bool syncTimeGetEpoch(time_t *outEpoch) {
+  configTime(0, 0, NTP_SERVER);
+  const uint32_t start = millis();
+  time_t now = time(nullptr);
+  // Before sync, time() reads near the 1970 epoch; a plausible 2020+ value
+  // is the signal that SNTP has actually landed a reply.
+  while (now < 1600000000) {
+    if (millis() - start >= NTP_SYNC_TIMEOUT_MS) {
+      return false;
+    }
+    delay(100);
+    now = time(nullptr);
+  }
+  *outEpoch = now;
+  return true;
+}
+
 static bool publishState(const char *nodeId, uint32_t fenceMv, float fenceKv,
                          float battV, int32_t rssi, uint32_t wifiMs) {
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
@@ -99,6 +150,9 @@ static bool publishState(const char *nodeId, uint32_t fenceMv, float fenceKv,
     return false;
   }
 
+  time_t epoch;
+  const bool haveTime = syncTimeGetEpoch(&epoch);
+
   JsonDocument doc;
   doc["node_id"] = nodeId;
   doc["fw"] = FW_VERSION;
@@ -109,6 +163,12 @@ static bool publishState(const char *nodeId, uint32_t fenceMv, float fenceKv,
   doc["boot"] = bootCount;
   doc["failed_pub"] = failedPublishes;
   doc["wifi_ms"] = wifiMs;
+  doc["seq"] = ++seqCounter;
+  doc["sample_interval_s"] = SAMPLE_INTERVAL_S;
+  doc["report_interval_s"] = REPORT_INTERVAL_S;
+  if (haveTime) {
+    doc["ts"] = static_cast<uint32_t>(epoch);
+  }
 
   char topic[64];
   snprintf(topic, sizeof(topic), "fence/%s/state", nodeId);
@@ -130,9 +190,9 @@ static bool publishState(const char *nodeId, uint32_t fenceMv, float fenceKv,
 static void goToSleep() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
-  Serial.printf("sleeping for %d s\n", SLEEP_INTERVAL_S);
+  Serial.printf("sleeping for %d s\n", SAMPLE_INTERVAL_S);
   Serial.flush();
-  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(SLEEP_INTERVAL_S) * 1000000ULL);
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(SAMPLE_INTERVAL_S) * 1000000ULL);
   esp_deep_sleep_start();
 }
 
@@ -154,6 +214,22 @@ void setup() {
   Serial.printf("fence %u mV (%.2f kV), batt %.2f V\n", fenceMv, fenceKv,
                 battV);
 
+  // This wake represents SAMPLE_INTERVAL_S of elapsed time since the last
+  // one, whether or not it ends up reporting.
+  secondsSinceReport += SAMPLE_INTERVAL_S;
+  const FenceStatus status = classifyStatus(fenceKv);
+  const bool reportDue = secondsSinceReport >= REPORT_INTERVAL_S;
+  const bool faultEdge = status != static_cast<FenceStatus>(lastReportedStatus);
+
+  if (!reportDue && !faultEdge) {
+    // Sample-only wake: radio never comes up. This is the cheap ~4x path
+    // that makes frequent sampling affordable.
+    Serial.println("sample-only wake, no report due");
+    goToSleep();
+    return;
+  }
+
+  Serial.printf("reporting (due=%d, fault_edge=%d)\n", reportDue, faultEdge);
   bool published = false;
   const uint32_t wifiStart = millis();
   if (connectWifi()) {
@@ -166,7 +242,13 @@ void setup() {
     Serial.println("wifi connect timed out");
   }
 
-  if (!published) {
+  if (published) {
+    secondsSinceReport = 0;
+    lastReportedStatus = status;
+  } else {
+    // Leave secondsSinceReport/lastReportedStatus alone: reportDue or
+    // faultEdge will still hold next wake, so the next sample retries the
+    // report rather than silently waiting a full REPORT_INTERVAL_S.
     ++failedPublishes;
   }
   goToSleep();

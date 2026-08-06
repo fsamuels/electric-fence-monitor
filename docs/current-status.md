@@ -5,7 +5,7 @@ _Last updated: 2026-08-05, after Dashboard Phase D5 (Multi-node & live updates).
 ## Where things stand
 
 - **Hardware**: design phase only. No physical unit has been built; Phases 0–6 in [hardware-plan.md](hardware-plan.md) are all still open. The custom PCB ([hardware/logic-power-board-schematic.md](../hardware/logic-power-board-schematic.md)) and the hand-wired HV sensing chain ([hardware/voltage-divider-schematic.md](../hardware/voltage-divider-schematic.md)) are designed on paper but unvalidated on a breadboard.
-- **Firmware**: first-pass code exists and covers software-plan Phases 1–2 (wake, multi-sample ADC peak read, battery read, publish retained MQTT state, deep sleep) — see [firmware/README.md](../firmware/README.md) and `firmware/src/main.cpp`. Calibration mode (Phase 3) and hardening/OTA (Phase 4) are not implemented.
+- **Firmware**: covers software-plan Phases 1–2, including the split sample/report duty cycle — wake every `SAMPLE_INTERVAL_S`, multi-sample ADC peak read, battery read; publish retained MQTT state only every `REPORT_INTERVAL_S` or immediately on a fault-threshold crossing (RTC-held state), with `ts`/`seq`/`sample_interval_s`/`report_interval_s` now in the payload. See [firmware/README.md](../firmware/README.md) and `firmware/src/main.cpp`. Calibration mode (Phase 3) and hardening/OTA (Phase 4) are not implemented.
 - **Dashboard**: the most mature part of the project. Built entirely ahead of hardware against mock data, using the firmware's real MQTT contract. **Phases D0–D5 are complete**; D5.5 and D6 are not started. See [dashboard-plan.md](dashboard-plan.md) for full phase detail.
 
 ## Features completed (dashboard D0–D5)
@@ -34,6 +34,7 @@ _Last updated: 2026-08-05, after Dashboard Phase D5 (Multi-node & live updates).
 
 ## Recent major changes
 
+- **2026-08-05 — Firmware Phase 2 duty-cycle split**: replaced the single `SLEEP_INTERVAL_S` with `SAMPLE_INTERVAL_S`/`REPORT_INTERVAL_S`, RTC-held fault-status edge-triggering for immediate out-of-band reports, and `ts`/`seq`/`sample_interval_s`/`report_interval_s` in the payload (best-effort NTP for `ts`). Backend ingest already handled all four fields, so this needed no backend changes. See `firmware/src/main.cpp` and [dashboard-plan.md#reporting-cadence-and-alert-latency](dashboard-plan.md#reporting-cadence-and-alert-latency).
 - **2026-08-05 — Dashboard Phase D5 (Multi-node & live updates)**: added `GET /nodes/{node_id}` (assignment + calibration history), unassigned-node inbox, assignment/reassignment dialog, link-quality indicators, "Log a change" fence-event form, node detail timeline modal, and live-refreshing per-card charts. See branch `feature/dashboard-d5-multi-node`.
 - Prior: Phases D0 (scaffolding) → D1 (data contract/storage) → D2 (mock publisher) → D3 (API) → D4 (frontend MVP) landed sequentially; see git history and `dashboard-plan.md` for phase-by-phase detail.
 

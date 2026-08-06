@@ -44,4 +44,24 @@
 #define BATT_DIVIDER_RATIO 2.0f
 
 // --- Duty cycle ---
-#define SLEEP_INTERVAL_S 600  // 10 min; alert latency vs. power trade-off
+// Sample often, talk rarely: bringing up the radio costs ~4x what an ADC
+// sample costs, so the node wakes every SAMPLE_INTERVAL_S but only pays for
+// Wi-Fi + MQTT every REPORT_INTERVAL_S — plus an immediate out-of-band
+// report whenever the fence crosses a fault threshold. See
+// docs/dashboard-plan.md#reporting-cadence-and-alert-latency for the energy
+// analysis behind these starting values; the interval numbers themselves are
+// open until hardware Phase 3 measures real sleep current.
+#define SAMPLE_INTERVAL_S 60
+#define REPORT_INTERVAL_S 900
+
+// --- Fault thresholds (coarse, on-node) ---
+// These only decide whether *this* node interrupts its own reporting
+// schedule to transmit early. They don't have to match the backend's
+// configurable alert thresholds (software-plan Phase 6) — see
+// docs/dashboard-plan.md#calibration.
+#define LOW_KV_THRESHOLD 5.0f
+#define DOWN_KV_THRESHOLD 1.0f
+
+// --- Time sync (best-effort, for the `ts` payload field) ---
+#define NTP_SERVER "pool.ntp.org"
+#define NTP_SYNC_TIMEOUT_MS 3000
